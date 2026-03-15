@@ -30,7 +30,7 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 # ── 設定 ──────────────────────────────────────────────────────────
-TICKER             = "AAPL"
+TICKER             = os.environ.get("TICKER", "AAPL").upper()
 HOPSWORKS_PROJECT  = os.environ.get("HOPSWORKS_PROJECT", "your_project_name")
 HOPSWORKS_API_KEY  = os.environ.get("HOPSWORKS_API_KEY", "")
 PREDICTION_GROUP   = f"{TICKER.lower()}_predictions"
@@ -122,9 +122,9 @@ def _mock_prediction() -> dict:
     return {
         "ticker":          TICKER,
         "prediction_date": str(datetime.today().date()),
-        "current_close":   round(price, 2),
-        "predicted_close": round(mock_pred, 2),
-        "change_pct":      round((mock_pred - price) / price * 100, 2),
+        "current_close":   round(price, 4),
+        "predicted_close": round(mock_pred, 4),
+        "change_pct":      round((mock_pred - price) / price * 100, 4),
         "direction":       "⬆ 看漲" if mock_pred > price else "⬇ 看跌",
         "predicted_at":    datetime.now().isoformat(),
         "_note":           "⚠ 示範用模擬資料，非真實模型預測",

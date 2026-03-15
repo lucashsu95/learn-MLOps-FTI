@@ -21,7 +21,7 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 # ── 設定區（改這裡就好） ──────────────────────────────────────────
-TICKER = "AAPL"          # 要預測的股票代號
+TICKER = os.environ.get("TICKER", "AAPL").upper()  # 要預測的股票代號
 PERIOD = "3y"            # 歷史資料長度（2y / 3y / 5y）
 HOPSWORKS_PROJECT = os.environ.get("HOPSWORKS_PROJECT")   # Hopsworks 上的 project 名稱
 HOPSWORKS_API_KEY = os.environ.get("HOPSWORKS_API_KEY")

@@ -20,7 +20,7 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 # ── 設定區 ────────────────────────────────────────────────────────
-TICKER = "AAPL"
+TICKER = os.environ.get("TICKER", "AAPL").upper()
 HOPSWORKS_PROJECT  = os.environ.get("HOPSWORKS_PROJECT")
 HOPSWORKS_API_KEY  = os.environ.get("HOPSWORKS_API_KEY")
 FEATURE_GROUP_NAME = f"{TICKER.lower()}_stock_features"
@@ -158,6 +158,16 @@ def prepare_data(df: pd.DataFrame):
 
     # 確保按日期排序（時序資料不能 shuffle！）
     df = df.sort_values("date").reset_index(drop=True)
+
+    # 某些 Feature Group 版本可能沒有 target 欄位，這裡用 close 自動重建。
+    if TARGET_COL not in df.columns:
+        if "close" not in df.columns:
+            raise KeyError(f"資料缺少 {TARGET_COL}，且無法用 close 重建目標欄位。")
+        print(f"    ⚠ 找不到 {TARGET_COL}，改用 close.shift(-1) 自動建立。")
+        df[TARGET_COL] = df["close"].shift(-1)
+
+    # 去除沒有 next-day target 的最後一筆。
+    df = df.dropna(subset=[TARGET_COL]).reset_index(drop=True)
 
     # 只保留有值的特徵欄位
     available_features = [c for c in FEATURE_COLS if c in df.columns]
@@ -335,7 +345,7 @@ def main():
         df = load_features_from_local()
 
     X_train, X_test, y_train, y_test, feature_names, df_sorted = prepare_data(df)
-    split_idx = int(len(df) * 0.8)
+    split_idx = int(len(df_sorted) * 0.8)
 
     model = train_model(X_train, y_train)
     metrics, y_pred = evaluate_model(

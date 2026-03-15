@@ -26,7 +26,7 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 # ── 設定區 ────────────────────────────────────────────────────────
-TICKER = "AAPL"
+TICKER = os.environ.get("TICKER", "AAPL").upper()
 HOPSWORKS_PROJECT  = os.environ.get("HOPSWORKS_PROJECT")
 HOPSWORKS_API_KEY  = os.environ.get("HOPSWORKS_API_KEY")
 
