@@ -70,7 +70,7 @@ FEATURE_COLS = [
     "price_to_book", "profit_margin",
     "revenue_growth", "earnings_growth",
 ]
-TARGET_COL = "target_next_close"
+TARGET_COL = "target_next_return"
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -163,8 +163,8 @@ def prepare_data(df: pd.DataFrame):
     if TARGET_COL not in df.columns:
         if "close" not in df.columns:
             raise KeyError(f"資料缺少 {TARGET_COL}，且無法用 close 重建目標欄位。")
-        print(f"    ⚠ 找不到 {TARGET_COL}，改用 close.shift(-1) 自動建立。")
-        df[TARGET_COL] = df["close"].shift(-1)
+        print(f"    ⚠ 找不到 {TARGET_COL}，改用 next-day return 自動建立。")
+        df[TARGET_COL] = df["close"].shift(-1) / df["close"] - 1
 
     # 去除沒有 next-day target 的最後一筆。
     df = df.dropna(subset=[TARGET_COL]).reset_index(drop=True)
@@ -221,7 +221,8 @@ def evaluate_model(model, X_test, y_test, feature_names, df, split_idx):
     mae  = mean_absolute_error(y_test, y_pred)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
     r2   = r2_score(y_test, y_pred)
-    mape = np.mean(np.abs((y_test - y_pred) / y_test)) * 100  # 百分比誤差
+    denom = np.maximum(np.abs(y_test), 1e-6)
+    mape = np.mean(np.abs((y_test - y_pred) / denom)) * 100
 
     metrics = {
         "mae":  round(float(mae), 4),
@@ -230,10 +231,10 @@ def evaluate_model(model, X_test, y_test, feature_names, df, split_idx):
         "mape": round(float(mape), 4),
     }
 
-    print(f"    MAE  = {mae:.4f}  （平均絕對誤差，單位：美元）")
+    print(f"    MAE  = {mae:.4f}  （平均絕對誤差，單位：報酬率）")
     print(f"    RMSE = {rmse:.4f}")
     print(f"    R²   = {r2:.4f}  （1.0 最佳）")
-    print(f"    MAPE = {mape:.2f}%  （平均百分比誤差）")
+    print(f"    MAPE = {mape:.2f}%  （報酬率百分比誤差）")
 
     # 繪圖
     _plot_results(y_test, y_pred, feature_names, model, df, split_idx)
@@ -248,11 +249,11 @@ def _plot_results(y_test, y_pred, feature_names, model, df, split_idx):
     # 圖一：預測 vs 實際
     ax = axes[0]
     dates = df["date"].iloc[split_idx:split_idx + len(y_test)].values
-    ax.plot(dates, y_test.values, label="實際收盤價", color="#2196F3", linewidth=1.5)
-    ax.plot(dates, y_pred,        label="預測收盤價", color="#FF5722", linewidth=1.5, linestyle="--")
-    ax.set_title(f"{TICKER} 預測 vs 實際（測試集）")
+    ax.plot(dates, y_test.values, label="實際次日報酬率", color="#2196F3", linewidth=1.5)
+    ax.plot(dates, y_pred,        label="預測次日報酬率", color="#FF5722", linewidth=1.5, linestyle="--")
+    ax.set_title(f"{TICKER} 次日報酬率：預測 vs 實際（測試集）")
     ax.set_xlabel("日期")
-    ax.set_ylabel("收盤價（USD）")
+    ax.set_ylabel("報酬率")
     ax.legend()
     # 只顯示少量 x 刻度避免擠在一起
     step = max(1, len(dates) // 6)
@@ -313,15 +314,30 @@ def save_model_to_hopsworks(model, metrics, feature_names):
         )
         mr = project.get_model_registry()
 
-        model_obj = mr.sklearn.create_model(
-            name=MODEL_NAME,
-            version=MODEL_VERSION,
-            metrics=metrics,
-            description=f"{TICKER} next-day close price prediction (XGBoost)",
-            input_example=None,
-        )
-        model_obj.save(model_dir)
-        print(f"    ✓ 已上傳至 Hopsworks Model Registry：{MODEL_NAME} v{MODEL_VERSION}")
+        saved_version = None
+        for offset in range(5):
+            candidate_version = MODEL_VERSION + offset
+            try:
+                model_obj = mr.sklearn.create_model(
+                    name=MODEL_NAME,
+                    version=candidate_version,
+                    metrics=metrics,
+                    description=f"{TICKER} next-day return prediction (XGBoost)",
+                    input_example=None,
+                )
+                model_obj.save(model_dir)
+                saved_version = candidate_version
+                break
+            except Exception as e:
+                if "already exists" in str(e).lower():
+                    print(f"    ⚠ model v{candidate_version} 已存在，嘗試下一個版本...")
+                    continue
+                raise
+
+        if saved_version is None:
+            raise RuntimeError("無法建立新的模型版本，請調整 MODEL_VERSION。")
+
+        print(f"    ✓ 已上傳至 Hopsworks Model Registry：{MODEL_NAME} v{saved_version}")
 
     except Exception as e:
         print(f"    ⚠ Hopsworks 上傳失敗（本地模式可忽略）: {e}")

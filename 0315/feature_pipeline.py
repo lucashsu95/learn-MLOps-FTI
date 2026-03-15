@@ -115,8 +115,8 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["return_5d"]  = close.pct_change(5)
     df["return_20d"] = close.pct_change(20)
 
-    # ── 目標欄位：明日收盤價 ──
-    df["target_next_close"] = close.shift(-1)
+    # ── 目標欄位：明日報酬率 ──
+    df["target_next_return"] = close.shift(-1) / close - 1
 
     print(f"    ✓ 新增 {len([c for c in df.columns if c not in ['open','high','low','close','volume']])} 個特徵欄位")
     return df
@@ -162,10 +162,10 @@ def merge_fundamentals(df: pd.DataFrame, fundamentals: dict) -> pd.DataFrame:
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """清理：移除 NaN、重設 index、型別轉換"""
     # 移除因技術指標 rolling window 產生的頭部 NaN
-    df = df.dropna(subset=["ma_50", "rsi_14", "macd", "target_next_close"])
+    df = df.dropna(subset=["ma_50", "rsi_14", "macd", "target_next_return"])
 
     # 最後一筆 target 是 NaN（沒有明日），移除
-    df = df.dropna(subset=["target_next_close"])
+    df = df.dropna(subset=["target_next_return"])
 
     # 重設 index，讓 date 變成欄位
     df = df.reset_index()
@@ -217,6 +217,11 @@ def save_to_hopsworks(df: pd.DataFrame) -> None:
             # 常見情況：metadata 建立/寫入時，Hive table 已存在。
             if "already exists" in err_msg.lower() and "table" in err_msg.lower():
                 print(f"    ⚠ v{candidate_version} 建立失敗（table 已存在），嘗試下一個版本...")
+                continue
+
+            # 既有版本 schema 不相容時，升版建立新 schema。
+            if "not compatible with feature group schema" in err_msg.lower() or "does not exist in feature group" in err_msg.lower():
+                print(f"    ⚠ v{candidate_version} schema 不相容，嘗試下一個版本...")
                 continue
             raise
 

@@ -30,12 +30,22 @@ TICKER = os.environ.get("TICKER", "AAPL").upper()
 HOPSWORKS_PROJECT  = os.environ.get("HOPSWORKS_PROJECT")
 HOPSWORKS_API_KEY  = os.environ.get("HOPSWORKS_API_KEY")
 
+
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as e:
+        raise ValueError(f"{name} 必須是整數，收到: {raw}") from e
+
 FEATURE_GROUP_NAME      = f"{TICKER.lower()}_stock_features"
-FEATURE_GROUP_VERSION   = 1
+FEATURE_GROUP_VERSION   = _get_int_env("FEATURE_GROUP_VERSION", 1)
 PREDICTION_GROUP_NAME   = f"{TICKER.lower()}_predictions"
-PREDICTION_GROUP_VERSION = 1
+PREDICTION_GROUP_VERSION = _get_int_env("PREDICTION_GROUP_VERSION", 1)
 MODEL_NAME    = f"{TICKER.lower()}_xgb_regressor"
-MODEL_VERSION = 1
+MODEL_VERSION = _get_int_env("MODEL_VERSION", 1)
 
 # Modal Image（部署時的 Python 環境）
 MODAL_IMAGE_PACKAGES = [
@@ -112,6 +122,11 @@ def fetch_latest_features(ticker: str) -> pd.Series:
     df["bb_lower"] = df["bb_mid"] - 2 * bb_std
     df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
 
+    df["close_vs_ma20"] = close / df["ma_20"] - 1
+    df["close_vs_ma50"] = close / df["ma_50"] - 1
+    df["ma20_vs_ma50"]  = df["ma_20"] / df["ma_50"] - 1
+    df["bb_position"]   = (close - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
+
     tr = pd.concat([
         high - low,
         (high - close.shift()).abs(),
@@ -183,7 +198,7 @@ def load_model_from_local(model_dir: str = None):
 
 # ── Step 3：執行預測 ──────────────────────────────────────────────
 def run_inference(model, feature_cols: list, latest_row: pd.Series) -> dict:
-    """用最新特徵預測明日收盤價"""
+    """用最新特徵預測明日報酬率，並換算預測收盤價"""
     print("  [3/4] 執行推論...")
 
     # 對齊特徵欄位（缺失的填 median 或 0）
@@ -193,9 +208,11 @@ def run_inference(model, feature_cols: list, latest_row: pd.Series) -> dict:
         X[col] = float(val) if (val is not None and not pd.isna(val)) else 0.0
 
     X_df = pd.DataFrame([X])
-    predicted_price = float(model.predict(X_df)[0])
+    predicted_return = float(model.predict(X_df)[0])
+    predicted_return = float(np.clip(predicted_return, -0.2, 0.2))
     current_price   = float(latest_row["close"])
-    change_pct      = (predicted_price - current_price) / current_price * 100
+    predicted_price = current_price * (1 + predicted_return)
+    change_pct      = predicted_return * 100
     direction       = "⬆ 看漲" if change_pct > 0 else "⬇ 看跌"
 
     result = {
