@@ -135,4 +135,5 @@ pyrightconfig.json
 # End of https://www.toptal.com/developers/gitignore/api/python
 
 model_aapl
+model_tsla
 latest_prediction.json

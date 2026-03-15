@@ -22,7 +22,7 @@ load_dotenv()
 
 # ── 設定區（改這裡就好） ──────────────────────────────────────────
 TICKER = os.environ.get("TICKER", "AAPL").upper()  # 要預測的股票代號
-PERIOD = "3y"            # 歷史資料長度（2y / 3y / 5y）
+PERIOD = os.environ.get("PERIOD", "3y")  # 歷史資料長度（例如 3y / 5y / 10y）
 HOPSWORKS_PROJECT = os.environ.get("HOPSWORKS_PROJECT")   # Hopsworks 上的 project 名稱
 HOPSWORKS_API_KEY = os.environ.get("HOPSWORKS_API_KEY")
 FEATURE_GROUP_NAME = f"{TICKER.lower()}_stock_features"
@@ -39,12 +39,36 @@ def _get_int_env(name: str, default: int) -> int:
 FEATURE_GROUP_VERSION = _get_int_env("FEATURE_GROUP_VERSION", 1)
 # ─────────────────────────────────────────────────────────────────
 
+MARKET_TICKERS = {
+    "spy": "SPY",
+    "qqq": "QQQ",
+    "vix": "^VIX",
+}
+
+
+def _safe_history(symbol: str, period: str) -> pd.DataFrame:
+    """下載行情並在失敗時回退較短期間。"""
+    fallback_periods = [period, "5y", "3y", "2y", "1y"]
+    seen = set()
+    for p in fallback_periods:
+        if p in seen:
+            continue
+        seen.add(p)
+        try:
+            hist = yf.Ticker(symbol).history(period=p)
+            if hist is not None and not hist.empty:
+                if p != period:
+                    print(f"    ⚠ {symbol} 期間 {period} 失敗，改用 {p}")
+                return hist
+        except Exception:
+            continue
+    return pd.DataFrame()
+
 
 def fetch_price_data(ticker: str, period: str) -> pd.DataFrame:
     """下載 OHLCV 歷史數據"""
     print(f"[1/4] 下載 {ticker} 歷史價格資料（{period}）...")
-    t = yf.Ticker(ticker)
-    df = t.history(period=period)
+    df = _safe_history(ticker, period)
 
     if df.empty:
         raise ValueError(f"找不到 {ticker} 的資料，請確認代號是否正確。")
@@ -122,6 +146,48 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_market_features(df: pd.DataFrame, period: str) -> pd.DataFrame:
+    """加入市場脈絡特徵：SPY/QQQ 報酬與 VIX 水位/變化。"""
+    print("[2.5/4] 加入市場脈絡特徵（SPY / QQQ / VIX）...")
+
+    market_df = pd.DataFrame(index=df.index)
+
+    for key, symbol in MARKET_TICKERS.items():
+        hist = _safe_history(symbol, period)
+        if hist.empty:
+            print(f"    ⚠ {symbol} 無資料，略過 {key} 特徵")
+            continue
+
+        hist.index = pd.to_datetime(hist.index).tz_localize(None)
+        close_col = hist["Close"].rename(f"{key}_close")
+        market_df = market_df.join(close_col, how="left")
+
+    market_df = market_df.ffill().bfill()
+
+    if "spy_close" in market_df.columns:
+        market_df["spy_return_1d"] = market_df["spy_close"].pct_change(1)
+        market_df["spy_return_5d"] = market_df["spy_close"].pct_change(5)
+    if "qqq_close" in market_df.columns:
+        market_df["qqq_return_1d"] = market_df["qqq_close"].pct_change(1)
+        market_df["qqq_return_5d"] = market_df["qqq_close"].pct_change(5)
+    if "vix_close" in market_df.columns:
+        market_df["vix_level"] = market_df["vix_close"]
+        market_df["vix_change_1d"] = market_df["vix_close"].pct_change(1)
+        market_df["vix_ma20"] = market_df["vix_close"].rolling(20).mean()
+        market_df["vix_vs_ma20"] = market_df["vix_close"] / market_df["vix_ma20"] - 1
+
+    market_feature_cols = [
+        "spy_return_1d", "spy_return_5d",
+        "qqq_return_1d", "qqq_return_5d",
+        "vix_level", "vix_change_1d", "vix_vs_ma20",
+    ]
+
+    available_cols = [c for c in market_feature_cols if c in market_df.columns]
+    df = df.join(market_df[available_cols], how="left")
+    print(f"    ✓ 新增市場特徵: {available_cols}")
+    return df
+
+
 def fetch_fundamental_data(ticker: str) -> dict:
     """抓取基本面數據（財報資料，每季更新一次）"""
     print("[3/4] 抓取基本面數據...")
@@ -162,7 +228,14 @@ def merge_fundamentals(df: pd.DataFrame, fundamentals: dict) -> pd.DataFrame:
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """清理：移除 NaN、重設 index、型別轉換"""
     # 移除因技術指標 rolling window 產生的頭部 NaN
-    df = df.dropna(subset=["ma_50", "rsi_14", "macd", "target_next_return"])
+    required_cols = ["ma_50", "rsi_14", "macd", "target_next_return"]
+    market_required = [
+        "spy_return_1d", "spy_return_5d",
+        "qqq_return_1d", "qqq_return_5d",
+        "vix_level", "vix_change_1d", "vix_vs_ma20",
+    ]
+    required_cols.extend([c for c in market_required if c in df.columns])
+    df = df.dropna(subset=required_cols)
 
     # 最後一筆 target 是 NaN（沒有明日），移除
     df = df.dropna(subset=["target_next_return"])
@@ -238,6 +311,7 @@ def main():
 
     df = fetch_price_data(TICKER, PERIOD)
     df = add_technical_indicators(df)
+    df = add_market_features(df, PERIOD)
 
     fundamentals = fetch_fundamental_data(TICKER)
     df = merge_fundamentals(df, fundamentals)

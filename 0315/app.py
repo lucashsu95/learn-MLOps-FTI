@@ -69,13 +69,14 @@ def _get_latest_feature_group(fs, name: str, min_version: int = 1, max_version: 
     raise RuntimeError(f"No available feature group found for {name}.")
 
 
-def fetch_prediction() -> dict:
+def fetch_prediction(fs=None) -> dict:
     """讀取最新一筆預測結果"""
     hopsworks_error = None
     # 優先嘗試 Hopsworks
     try:
-        project = _hopsworks_login()
-        fs      = project.get_feature_store()
+        if fs is None:
+            project = _hopsworks_login()
+            fs      = project.get_feature_store()
         fg, _   = _get_latest_feature_group(fs, PREDICTION_GROUP)
         df      = fg.read()
         if df is None or df.empty:
@@ -96,11 +97,12 @@ def fetch_prediction() -> dict:
     return _mock_prediction(hopsworks_error)
 
 
-def fetch_history() -> pd.DataFrame:
+def fetch_history(fs=None) -> pd.DataFrame:
     """讀取近期歷史收盤價 + 技術指標"""
     try:
-        project = _hopsworks_login()
-        fs      = project.get_feature_store()
+        if fs is None:
+            project = _hopsworks_login()
+            fs      = project.get_feature_store()
         fg, _   = _get_latest_feature_group(fs, FEATURE_GROUP)
         df      = fg.read()
         if df is None or df.empty:
@@ -384,15 +386,22 @@ def render_summary_html(prediction: dict) -> str:
 
 def refresh_dashboard():
     """點擊「重新整理」時觸發"""
+    fs = None
     try:
-        prediction = fetch_prediction()
-        history    = fetch_history()
+        project = _hopsworks_login()
+        fs      = project.get_feature_store()
+    except Exception:
+        pass
+
+    try:
+        prediction = fetch_prediction(fs)
+        history    = fetch_history(fs)
         chart      = build_price_chart(history, prediction)
         summary    = render_summary_html(prediction)
         status     = "✅ 資料更新成功"
     except Exception as e:
         prediction = _mock_prediction()
-        history    = fetch_history()
+        history    = fetch_history(fs)
         chart      = build_price_chart(history, prediction)
         summary    = render_summary_html(prediction)
         status     = f"⚠ 使用示範資料（{str(e)[:60]}）"

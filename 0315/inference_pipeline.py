@@ -46,6 +46,7 @@ PREDICTION_GROUP_NAME   = f"{TICKER.lower()}_predictions"
 PREDICTION_GROUP_VERSION = _get_int_env("PREDICTION_GROUP_VERSION", 1)
 MODEL_NAME    = f"{TICKER.lower()}_xgb_regressor"
 MODEL_VERSION = _get_int_env("MODEL_VERSION", 1)
+SIGNAL_THRESHOLD = float(os.environ.get("SIGNAL_THRESHOLD", "0.58"))
 
 # Modal Image（部署時的 Python 環境）
 MODAL_IMAGE_PACKAGES = [
@@ -53,6 +54,12 @@ MODAL_IMAGE_PACKAGES = [
     "scikit-learn", "pandas", "numpy", "joblib"
 ]
 # ─────────────────────────────────────────────────────────────────
+
+MARKET_TICKERS = {
+    "spy": "SPY",
+    "qqq": "QQQ",
+    "vix": "^VIX",
+}
 
 
 def _validate_hopsworks_config() -> None:
@@ -140,6 +147,28 @@ def fetch_latest_features(ticker: str) -> pd.Series:
     df["return_5d"]  = close.pct_change(5)
     df["return_20d"] = close.pct_change(20)
 
+    # ── 市場脈絡（SPY / QQQ / VIX）──
+    market_df = pd.DataFrame(index=df.index)
+    for key, symbol in MARKET_TICKERS.items():
+        hist = yf.Ticker(symbol).history(period="120d")
+        if hist.empty:
+            continue
+        hist.index = pd.to_datetime(hist.index).tz_localize(None)
+        market_df = market_df.join(hist["Close"].rename(f"{key}_close"), how="left")
+
+    market_df = market_df.ffill().bfill()
+    if "spy_close" in market_df.columns:
+        df["spy_return_1d"] = market_df["spy_close"].pct_change(1)
+        df["spy_return_5d"] = market_df["spy_close"].pct_change(5)
+    if "qqq_close" in market_df.columns:
+        df["qqq_return_1d"] = market_df["qqq_close"].pct_change(1)
+        df["qqq_return_5d"] = market_df["qqq_close"].pct_change(5)
+    if "vix_close" in market_df.columns:
+        df["vix_level"] = market_df["vix_close"]
+        df["vix_change_1d"] = market_df["vix_close"].pct_change(1)
+        df["vix_ma20"] = market_df["vix_close"].rolling(20).mean()
+        df["vix_vs_ma20"] = df["vix_level"] / df["vix_ma20"] - 1
+
     # ── 基本面（取最新值）──
     info = t.info
     df["pe_ratio"]      = info.get("trailingPE",    None)
@@ -173,7 +202,12 @@ def load_model_from_hopsworks():
     model_obj = mr.get_model(MODEL_NAME, version=MODEL_VERSION)
     model_dir = model_obj.download()
 
-    model = joblib.load(os.path.join(model_dir, "model.pkl"))
+    reg_path = os.path.join(model_dir, "reg_model.pkl")
+    cls_path = os.path.join(model_dir, "cls_model.pkl")
+    legacy_path = os.path.join(model_dir, "model.pkl")
+
+    reg_model = joblib.load(reg_path if os.path.exists(reg_path) else legacy_path)
+    cls_model = joblib.load(cls_path) if os.path.exists(cls_path) else None
 
     with open(os.path.join(model_dir, "metadata.json")) as f:
         metadata = json.load(f)
@@ -181,7 +215,10 @@ def load_model_from_hopsworks():
     feature_cols = metadata["feature_cols"]
     print(f"  ✓ 模型載入成功（訓練於 {metadata['trained_at'][:10]}）")
     print(f"  ✓ 使用 {len(feature_cols)} 個特徵")
-    return model, feature_cols
+    return {
+        "regressor": reg_model,
+        "classifier": cls_model,
+    }, feature_cols, metadata
 
 
 def load_model_from_local(model_dir: str = None):
@@ -189,16 +226,23 @@ def load_model_from_local(model_dir: str = None):
     import joblib
     if model_dir is None:
         model_dir = f"model_{TICKER.lower()}"
-    model = joblib.load(os.path.join(model_dir, "model.pkl"))
+    reg_path = os.path.join(model_dir, "reg_model.pkl")
+    cls_path = os.path.join(model_dir, "cls_model.pkl")
+    legacy_path = os.path.join(model_dir, "model.pkl")
+    reg_model = joblib.load(reg_path if os.path.exists(reg_path) else legacy_path)
+    cls_model = joblib.load(cls_path) if os.path.exists(cls_path) else None
     with open(os.path.join(model_dir, "metadata.json")) as f:
         metadata = json.load(f)
     print(f"  ✓ 本地模型載入：{model_dir}/")
-    return model, metadata["feature_cols"]
+    return {
+        "regressor": reg_model,
+        "classifier": cls_model,
+    }, metadata["feature_cols"], metadata
 
 
 # ── Step 3：執行預測 ──────────────────────────────────────────────
-def run_inference(model, feature_cols: list, latest_row: pd.Series) -> dict:
-    """用最新特徵預測明日報酬率，並換算預測收盤價"""
+def run_inference(models, feature_cols: list, latest_row: pd.Series, metadata: dict = None) -> dict:
+    """用最新特徵預測目標期報酬率，並換算預測收盤價"""
     print("  [3/4] 執行推論...")
 
     # 對齊特徵欄位（缺失的填 median 或 0）
@@ -208,8 +252,37 @@ def run_inference(model, feature_cols: list, latest_row: pd.Series) -> dict:
         X[col] = float(val) if (val is not None and not pd.isna(val)) else 0.0
 
     X_df = pd.DataFrame([X])
-    predicted_return = float(model.predict(X_df)[0])
+    reg_model = models["regressor"]
+    cls_model = models.get("classifier")
+
+    reg_pred = float(reg_model.predict(X_df)[0])
+    reg_pred = float(np.clip(reg_pred, -0.2, 0.2))
+
+    used_threshold = float((metadata or {}).get("tuning", {}).get("signal_threshold", SIGNAL_THRESHOLD))
+    if cls_model is not None:
+        up_prob = float(cls_model.predict_proba(X_df)[0][1])
+        if up_prob >= used_threshold:
+            model_output = abs(reg_pred)
+        elif up_prob <= (1 - used_threshold):
+            model_output = -abs(reg_pred)
+        else:
+            model_output = 0.0
+    else:
+        up_prob = None
+        model_output = reg_pred
+
+    target_mode = str((metadata or {}).get("target_mode", "raw")).lower()
+    horizon_days = int((metadata or {}).get("target_horizon_days", 1))
+    if target_mode == "excess_spy":
+        benchmark_col = f"spy_return_{horizon_days}d"
+        benchmark_return = float(latest_row.get(benchmark_col, 0.0) or 0.0)
+        predicted_return = model_output + benchmark_return
+    else:
+        benchmark_return = 0.0
+        predicted_return = model_output
+
     predicted_return = float(np.clip(predicted_return, -0.2, 0.2))
+
     current_price   = float(latest_row["close"])
     predicted_price = current_price * (1 + predicted_return)
     change_pct      = predicted_return * 100
@@ -226,7 +299,11 @@ def run_inference(model, feature_cols: list, latest_row: pd.Series) -> dict:
     }
 
     print(f"  ✓ 今日收盤：${current_price:.2f}")
-    print(f"  ✓ 預測明日：${predicted_price:.2f}  ({change_pct:+.2f}%)  {direction}")
+    print(f"  ✓ 預測 {horizon_days} 日後：${predicted_price:.2f}  ({change_pct:+.2f}%)  {direction}")
+    if target_mode == "excess_spy":
+        print(f"  ✓ 目標模式：超額報酬（加回 SPY {horizon_days}d 報酬 {benchmark_return:+.4f}）")
+    if up_prob is not None:
+        print(f"  ✓ Up 機率：{up_prob:.4f}  |  信心門檻：{used_threshold:.2f}")
     return result
 
 
@@ -275,7 +352,7 @@ def save_prediction_to_hopsworks(result: dict):
         print(f"  ⚠ Hopsworks 寫入失敗（本地模式）: {e}")
         # 本地 fallback：存成 JSON
         out_path = "latest_prediction.json"
-        with open(out_path, "w") as f:
+        with open(out_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, ensure_ascii=False)
         print(f"  ✓ 預測結果已存至本地：{out_path}")
 
@@ -293,19 +370,20 @@ def run_pipeline():
 
     # Step 2：優先嘗試 Hopsworks，失敗用本地
     try:
-        model, feature_cols = load_model_from_hopsworks()
+        models, feature_cols, metadata = load_model_from_hopsworks()
     except Exception as e:
         print(f"  ⚠ Hopsworks 連線失敗，改用本地模型: {e}")
-        model, feature_cols = load_model_from_local()
+        models, feature_cols, metadata = load_model_from_local()
 
     # Step 3
-    result = run_inference(model, feature_cols, latest_row)
+    result = run_inference(models, feature_cols, latest_row, metadata)
 
     # Step 4
     save_prediction_to_hopsworks(result)
 
     print("\n✅ Inference Pipeline 執行完畢")
-    print(f"   {result['ticker']}  預測明日收盤：${result['predicted_close']}  {result['direction']}")
+    horizon_days = int((metadata or {}).get("target_horizon_days", 1))
+    print(f"   {result['ticker']}  預測 {horizon_days} 日後收盤：${result['predicted_close']}  {result['direction']}")
     return result
 
 
