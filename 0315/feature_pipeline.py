@@ -26,7 +26,17 @@ PERIOD = "3y"            # 歷史資料長度（2y / 3y / 5y）
 HOPSWORKS_PROJECT = os.environ.get("HOPSWORKS_PROJECT")   # Hopsworks 上的 project 名稱
 HOPSWORKS_API_KEY = os.environ.get("HOPSWORKS_API_KEY")
 FEATURE_GROUP_NAME = f"{TICKER.lower()}_stock_features"
-FEATURE_GROUP_VERSION = int(os.environ.get("FEATURE_GROUP_VERSION"))
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as e:
+        raise ValueError(f"{name} 必須是整數，收到: {raw}") from e
+
+
+FEATURE_GROUP_VERSION = _get_int_env("FEATURE_GROUP_VERSION", 1)
 # ─────────────────────────────────────────────────────────────────
 
 

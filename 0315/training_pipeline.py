@@ -24,9 +24,21 @@ TICKER = "AAPL"
 HOPSWORKS_PROJECT  = os.environ.get("HOPSWORKS_PROJECT")
 HOPSWORKS_API_KEY  = os.environ.get("HOPSWORKS_API_KEY")
 FEATURE_GROUP_NAME = f"{TICKER.lower()}_stock_features"
-FEATURE_GROUP_VERSION = int(os.environ.get("FEATURE_GROUP_VERSION"))
+
+
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as e:
+        raise ValueError(f"{name} 必須是整數，收到: {raw}") from e
+
+
+FEATURE_GROUP_VERSION = _get_int_env("FEATURE_GROUP_VERSION", 1)
 MODEL_NAME    = f"{TICKER.lower()}_xgb_regressor"
-MODEL_VERSION = int(os.environ.get("MODEL_VERSION"))
+MODEL_VERSION = _get_int_env("MODEL_VERSION", 1)
 
 # XGBoost 超參數
 XGB_PARAMS = {
@@ -98,7 +110,11 @@ def load_features_from_hopsworks() -> pd.DataFrame:
         api_key_value=HOPSWORKS_API_KEY
     )
     fs = project.get_feature_store()
-    fg, version = _get_latest_feature_group(fs, FEATURE_GROUP_NAME, min_version=1)
+    fg, version = _get_latest_feature_group(
+        fs,
+        FEATURE_GROUP_NAME,
+        min_version=FEATURE_GROUP_VERSION,
+    )
     df = fg.read()
     print(f"    ✓ 讀取 {len(df)} 筆資料（{FEATURE_GROUP_NAME} v{version}）")
     return df
@@ -113,11 +129,24 @@ def load_features_from_local(csv_path: str = None) -> pd.DataFrame:
         print(f"[1/5] 從本地 CSV 讀取：{csv_path}")
         df = pd.read_csv(csv_path)
     else:
-        print("[1/5] 本地模式：直接執行 feature_pipeline 取得資料...")
+        print("[1/5] 本地模式：執行特徵計算（不寫入 Hopsworks）...")
         import sys
         sys.path.insert(0, os.path.dirname(__file__))
-        from feature_pipeline import main as run_feature_pipeline
-        df = run_feature_pipeline()
+        from feature_pipeline import (
+            fetch_price_data,
+            add_technical_indicators,
+            fetch_fundamental_data,
+            merge_fundamentals,
+            clean_dataframe,
+            TICKER as FEATURE_TICKER,
+            PERIOD as FEATURE_PERIOD,
+        )
+
+        df = fetch_price_data(FEATURE_TICKER, FEATURE_PERIOD)
+        df = add_technical_indicators(df)
+        fundamentals = fetch_fundamental_data(FEATURE_TICKER)
+        df = merge_fundamentals(df, fundamentals)
+        df = clean_dataframe(df)
 
     print(f"    ✓ 讀取 {len(df)} 筆資料")
     return df
