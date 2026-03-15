@@ -7,7 +7,7 @@ Hugging Face Spaces 上的 Gradio UI。
 部署方式：
   1. 在 HF Spaces 新建 Space（SDK: Gradio）
   2. 上傳此檔案 + requirements.txt
-  3. 在 Space Settings → Secrets 加入 HOPSWORKS_API_KEY
+    3. 在 Space Settings → Secrets 加入 HOPSWORKS_PROJECT 與 HOPSWORKS_API_KEY
 
 本地測試：
     pip install gradio plotly hopsworks yfinance
@@ -31,7 +31,7 @@ load_dotenv()
 
 # ── 設定 ──────────────────────────────────────────────────────────
 TICKER             = os.environ.get("TICKER", "AAPL").upper()
-HOPSWORKS_PROJECT  = os.environ.get("HOPSWORKS_PROJECT", "your_project_name")
+HOPSWORKS_PROJECT  = os.environ.get("HOPSWORKS_PROJECT")
 HOPSWORKS_API_KEY  = os.environ.get("HOPSWORKS_API_KEY", "")
 PREDICTION_GROUP   = f"{TICKER.lower()}_predictions"
 FEATURE_GROUP      = f"{TICKER.lower()}_stock_features"
@@ -39,9 +39,17 @@ HISTORY_DAYS       = 90   # UI 上顯示最近幾天的走勢
 # ─────────────────────────────────────────────────────────────────
 
 
+def _validate_hopsworks_config() -> None:
+    if not HOPSWORKS_PROJECT:
+        raise ValueError("缺少 HOPSWORKS_PROJECT")
+    if not HOPSWORKS_API_KEY:
+        raise ValueError("缺少 HOPSWORKS_API_KEY")
+
+
 # ── 資料讀取 ──────────────────────────────────────────────────────
 def _hopsworks_login():
     import hopsworks
+    _validate_hopsworks_config()
     return hopsworks.login(
         project=HOPSWORKS_PROJECT,
         api_key_value=HOPSWORKS_API_KEY
@@ -53,6 +61,8 @@ def _get_latest_feature_group(fs, name: str, min_version: int = 1, max_version: 
     for version in range(max_version, min_version - 1, -1):
         try:
             fg = fs.get_feature_group(name, version=version)
+            if fg is None:
+                continue
             return fg, version
         except Exception:
             continue
@@ -61,17 +71,20 @@ def _get_latest_feature_group(fs, name: str, min_version: int = 1, max_version: 
 
 def fetch_prediction() -> dict:
     """讀取最新一筆預測結果"""
+    hopsworks_error = None
     # 優先嘗試 Hopsworks
     try:
         project = _hopsworks_login()
         fs      = project.get_feature_store()
         fg, _   = _get_latest_feature_group(fs, PREDICTION_GROUP)
         df      = fg.read()
+        if df is None or df.empty:
+            raise RuntimeError(f"{PREDICTION_GROUP} 沒有可用資料。")
         df      = df.sort_values("prediction_date", ascending=False)
         latest  = df.iloc[0].to_dict()
         return latest
-    except Exception:
-        pass
+    except Exception as e:
+        hopsworks_error = str(e)
 
     # Fallback：讀本地 JSON（開發用）
     local_path = "latest_prediction.json"
@@ -80,7 +93,7 @@ def fetch_prediction() -> dict:
             return json.load(f)
 
     # 最後手段：用 yfinance 即時算一個假預測（示範用）
-    return _mock_prediction()
+    return _mock_prediction(hopsworks_error)
 
 
 def fetch_history() -> pd.DataFrame:
@@ -90,6 +103,8 @@ def fetch_history() -> pd.DataFrame:
         fs      = project.get_feature_store()
         fg, _   = _get_latest_feature_group(fs, FEATURE_GROUP)
         df      = fg.read()
+        if df is None or df.empty:
+            raise RuntimeError(f"{FEATURE_GROUP} 沒有可用資料。")
         df      = df.sort_values("date").tail(HISTORY_DAYS)
         return df
     except Exception:
@@ -113,12 +128,15 @@ def fetch_history() -> pd.DataFrame:
     return df
 
 
-def _mock_prediction() -> dict:
+def _mock_prediction(reason: str = None) -> dict:
     """示範用假資料（Hopsworks & 本地都沒資料時）"""
     import yfinance as yf
     t     = yf.Ticker(TICKER)
     price = t.fast_info["last_price"]
     mock_pred = price * (1 + np.random.uniform(-0.01, 0.02))
+    note = "⚠ 示範用模擬資料，非真實模型預測"
+    if reason:
+        note = f"{note}｜原因：{reason}"
     return {
         "ticker":          TICKER,
         "prediction_date": str(datetime.today().date()),
@@ -127,7 +145,7 @@ def _mock_prediction() -> dict:
         "change_pct":      round((mock_pred - price) / price * 100, 4),
         "direction":       "⬆ 看漲" if mock_pred > price else "⬇ 看跌",
         "predicted_at":    datetime.now().isoformat(),
-        "_note":           "⚠ 示範用模擬資料，非真實模型預測",
+        "_note":           note,
     }
 
 
