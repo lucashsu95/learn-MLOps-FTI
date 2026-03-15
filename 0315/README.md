@@ -1,5 +1,28 @@
 ## 
 
+### 自動化現況（MLOps 閉環）
+
+目前專案已具備以下自動化能力：
+
+1. 自動調參與時序驗證：`training_pipeline.py`
+2. 自動 baseline 守門：未達標不會上傳新模型
+3. 自動 smoke tests：訓練後會檢查輸入欄位對齊與模型輸出有效性
+4. 自動更新版本：上傳成功後會自動把 `.env` 的 `MODEL_VERSION` 更新為新版本
+5. 自動推論排程：`inference_pipeline.py` 已有 Modal Cron 排程（交易日）
+6. 自動重訓排程：`retraining_pipeline.py` 提供每週重訓入口（可 deploy 到 Modal）
+
+### 部署自動重訓
+
+```bash
+modal deploy retraining_pipeline.py
+```
+
+手動觸發一次：
+
+```bash
+modal run retraining_pipeline.py
+```
+
 每個專案都有這三個部分：
 
 **Feature Pipeline** → **Training Pipeline** → **Inference Pipeline + UI**

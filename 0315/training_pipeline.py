@@ -117,6 +117,41 @@ def _validate_hopsworks_config() -> None:
         raise ValueError("缺少 HOPSWORKS_API_KEY，請在 .env 或系統環境變數設定。")
 
 
+def _notify(message: str) -> None:
+    """集中告警輸出，之後可替換成 Slack/Email/Webhook。"""
+    print(f"    [ALERT] {message}")
+
+
+def _update_env_model_version(new_version: int, env_path: str = ".env") -> bool:
+    """上傳成功後自動更新 .env 的 MODEL_VERSION，避免手動改版號。"""
+    if not os.path.exists(env_path):
+        print(f"    ⚠ 找不到 {env_path}，略過 MODEL_VERSION 自動更新。")
+        return False
+
+    with open(env_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    updated = False
+    out_lines = []
+    for line in lines:
+        if line.strip().startswith("MODEL_VERSION="):
+            out_lines.append(f"MODEL_VERSION={new_version}\n")
+            updated = True
+        else:
+            out_lines.append(line)
+
+    if not updated:
+        if out_lines and not out_lines[-1].endswith("\n"):
+            out_lines[-1] = out_lines[-1] + "\n"
+        out_lines.append(f"MODEL_VERSION={new_version}\n")
+
+    with open(env_path, "w", encoding="utf-8") as f:
+        f.writelines(out_lines)
+
+    print(f"    ✓ 已自動更新 {env_path}：MODEL_VERSION={new_version}")
+    return True
+
+
 # ── Step 1：讀取 Feature Store ────────────────────────────────────
 def load_features_from_hopsworks() -> pd.DataFrame:
     print("[1/5] 從 Hopsworks Feature Store 讀取資料...")
@@ -443,6 +478,28 @@ def evaluate_walk_forward(df: pd.DataFrame, feature_names: list, reg_params: dic
     return wf_metrics
 
 
+def run_smoke_tests(models, X_test: pd.DataFrame, feature_names: list):
+    """最小自動化測試：確保輸入對齊且輸出可用。"""
+    print("[4.8/5] 執行訓練後 smoke tests...")
+
+    if X_test is None or X_test.empty:
+        raise RuntimeError("smoke test 失敗：X_test 為空。")
+
+    if list(X_test.columns) != list(feature_names):
+        raise RuntimeError("smoke test 失敗：X_test 欄位順序與 feature_names 不一致。")
+
+    sample = X_test.iloc[[0]].copy()
+    reg_pred = float(models["regressor"].predict(sample)[0])
+    cls_proba = float(models["classifier"].predict_proba(sample)[0][1])
+
+    if not np.isfinite(reg_pred):
+        raise RuntimeError("smoke test 失敗：regressor 輸出非有限數值。")
+    if (not np.isfinite(cls_proba)) or cls_proba < 0.0 or cls_proba > 1.0:
+        raise RuntimeError("smoke test 失敗：classifier 機率輸出異常。")
+
+    print("    ✓ smoke tests 通過")
+
+
 def _plot_results(y_test, y_pred, feature_names, model, df, split_idx):
     """產生兩張圖：預測走勢 + 特徵重要性"""
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -522,7 +579,11 @@ def save_model_to_hopsworks(models, metrics, feature_names, tuning_info, should_
 
     if not should_register and not FORCE_REGISTER:
         print("    ⚠ 守門啟用：本次模型未優於 baseline，略過 Model Registry 上傳。")
-        return
+        return {
+            "registered": False,
+            "saved_version": None,
+            "reason": "gating_not_passed",
+        }
 
     # 上傳至 Hopsworks
     try:
@@ -557,10 +618,20 @@ def save_model_to_hopsworks(models, metrics, feature_names, tuning_info, should_
             raise RuntimeError("無法建立新的模型版本，請調整 MODEL_VERSION。")
 
         print(f"    ✓ 已上傳至 Hopsworks Model Registry：{MODEL_NAME} v{saved_version}")
+        return {
+            "registered": True,
+            "saved_version": saved_version,
+            "reason": "uploaded",
+        }
 
     except Exception as e:
         print(f"    ⚠ Hopsworks 上傳失敗（本地模式可忽略）: {e}")
         print(f"    模型保留在本地：{model_dir}/")
+        return {
+            "registered": False,
+            "saved_version": None,
+            "reason": f"upload_failed: {e}",
+        }
 
 
 # ── 主流程 ────────────────────────────────────────────────────────
@@ -593,6 +664,8 @@ def main():
     )
     metrics.update(wf_metrics)
 
+    run_smoke_tests(models, X_test, feature_names)
+
     mae_pass = metrics["mae"] <= metrics["baseline_mae"] * (1 + MAE_TOLERANCE_PCT)
     rmse_pass = metrics["rmse"] < metrics["baseline_rmse"]
     r2_pass = metrics["r2"] > metrics["baseline_r2"]
@@ -605,14 +678,20 @@ def main():
     )
     if REGISTER_IF_BEAT_BASELINE and not beats_baseline and not FORCE_REGISTER:
         print("    ⚠ 模型未通過守門條件，本次不上傳新版本。")
+        _notify("模型未通過 baseline 守門，維持現役版本。")
 
-    save_model_to_hopsworks(
+    register_result = save_model_to_hopsworks(
         models,
         metrics,
         feature_names,
         tuning_info,
         should_register=beats_baseline or (not REGISTER_IF_BEAT_BASELINE),
     )
+
+    if register_result.get("registered") and register_result.get("saved_version") is not None:
+        _update_env_model_version(int(register_result["saved_version"]))
+    else:
+        _notify(f"本次未更新線上版本。原因：{register_result.get('reason')}")
 
     print("\n✅ Training Pipeline 執行完畢")
     print(f"   最終 MAPE：{metrics['mape']}%  |  R²：{metrics['r2']}")
