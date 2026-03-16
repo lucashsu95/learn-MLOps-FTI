@@ -1,3 +1,4 @@
+# Core dependencies
 gradio>=4.0.0
 plotly>=5.0.0
 yfinance>=0.2.0
@@ -5,3 +6,17 @@ hopsworks>=3.0.0
 pandas>=1.5.0
 numpy>=1.23.0
 python-dotenv>=1.0.0
+
+# ML dependencies
+xgboost>=1.7.0
+scikit-learn>=1.2.0
+matplotlib>=3.6.0
+joblib>=1.2.0
+
+# Development dependencies (optional)
+# pip install -e ".[dev]" to install these
+# pytest>=7.0.0
+# pytest-cov>=4.0.0
+# ruff>=0.1.0
+# mypy>=1.0.0
+# black>=23.0.0
