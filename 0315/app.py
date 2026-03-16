@@ -98,21 +98,7 @@ def fetch_prediction(fs=None) -> dict:
 
 
 def fetch_history(fs=None) -> pd.DataFrame:
-    """讀取近期歷史收盤價 + 技術指標"""
-    try:
-        if fs is None:
-            project = _hopsworks_login()
-            fs      = project.get_feature_store()
-        fg, _   = _get_latest_feature_group(fs, FEATURE_GROUP)
-        df      = fg.read()
-        if df is None or df.empty:
-            raise RuntimeError(f"{FEATURE_GROUP} 沒有可用資料。")
-        df      = df.sort_values("date").tail(HISTORY_DAYS)
-        return df
-    except Exception:
-        pass
-
-    # Fallback：直接用 yfinance
+    """讀取近期歷史收盤價 + 技術指標（直接用 yfinance 確保包含最新交易日）"""
     import yfinance as yf
     t  = yf.Ticker(TICKER)
     df = t.history(period=f"{HISTORY_DAYS}d")
@@ -205,16 +191,18 @@ def build_price_chart(df: pd.DataFrame, prediction: dict) -> go.Figure:
             line=dict(color=COLORS["orange"], width=1.2),
         ), row=1, col=1)
 
-    # ── 預測點（明日）──
-    pred_date  = _next_trading_day(dates[-1])
+    # ── 預測點（依目標天期）──
+    base_date = str(prediction.get("prediction_date") or dates[-1])
+    horizon_days = int(prediction.get("target_horizon_days", 1) or 1)
+    pred_date = prediction.get("predicted_for_date") or _add_trading_days(base_date, horizon_days)
     pred_price = prediction["predicted_close"]
     curr_price = prediction["current_close"]
     is_up      = pred_price >= curr_price
     pred_color = COLORS["green"] if is_up else COLORS["red"]
 
-    # 虛線連接今日→明日預測
+    # 虛線連接基準日→目標日預測
     fig.add_trace(go.Scatter(
-        x=[dates[-1], pred_date],
+        x=[base_date, pred_date],
         y=[curr_price, pred_price],
         mode="lines+markers",
         name="預測",
@@ -298,6 +286,17 @@ def _next_trading_day(date_str: str) -> str:
     return d.strftime("%Y-%m-%d")
 
 
+def _add_trading_days(date_str: str, days: int) -> str:
+    """從指定日期往後推算 N 個交易日（僅跳過週末）。"""
+    d = datetime.strptime(date_str[:10], "%Y-%m-%d")
+    remaining = max(int(days), 0)
+    while remaining > 0:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            remaining -= 1
+    return d.strftime("%Y-%m-%d")
+
+
 # ── Gradio UI ─────────────────────────────────────────────────────
 CSS = """
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;500&display=swap');
@@ -353,6 +352,9 @@ def render_summary_html(prediction: dict) -> str:
     curr  = prediction.get("current_close", 0)
     pred  = prediction.get("predicted_close", 0)
     pct   = prediction.get("change_pct", 0)
+    prediction_date = str(prediction.get("prediction_date", ""))
+    horizon_days = int(prediction.get("target_horizon_days", 1) or 1)
+    forecast_date = prediction.get("predicted_for_date") or (_add_trading_days(prediction_date, horizon_days) if prediction_date else "—")
     is_up = pct >= 0
     arrow = "▲" if is_up else "▼"
     cls   = "price-change-up" if is_up else "price-change-down"
@@ -361,7 +363,7 @@ def render_summary_html(prediction: dict) -> str:
 
     return f"""
     <div class="header-card">
-        <div class="ticker-label">{TICKER} · Next-Day Close Prediction</div>
+        <div class="ticker-label">{TICKER} · {horizon_days}-Trading-Day Close Prediction</div>
         <div class="price-main">${pred:,.2f}</div>
         <div class="{cls}">{arrow} {abs(pct):.2f}%&nbsp;&nbsp;from ${curr:,.2f}</div>
         <div class="stat-grid">
@@ -370,12 +372,20 @@ def render_summary_html(prediction: dict) -> str:
                 <div class="stat-value">${curr:,.2f}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">預測明日</div>
+                <div class="stat-label">預測目標價</div>
                 <div class="stat-value" style="color:{'#3fb950' if is_up else '#f85149'}">${pred:,.2f}</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">預測方向</div>
                 <div class="stat-value" style="color:{'#3fb950' if is_up else '#f85149'}">{prediction.get('direction','—')}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">資料日期</div>
+                <div class="stat-value">{prediction_date or '—'}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">預測交易日</div>
+                <div class="stat-value">{forecast_date}</div>
             </div>
         </div>
         {'<div style="margin-top:12px;padding:8px 12px;background:#2d1e00;border:1px solid #7d4e00;border-radius:6px;font-size:12px;color:#ffa657;">'+note+'</div>' if note else ''}

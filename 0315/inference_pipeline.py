@@ -19,7 +19,7 @@ import json
 import warnings
 import numpy as np
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
 
 warnings.filterwarnings("ignore")
@@ -68,6 +68,17 @@ def _validate_hopsworks_config() -> None:
         raise ValueError("缺少 HOPSWORKS_PROJECT，請在 .env 或系統環境變數設定。")
     if not HOPSWORKS_API_KEY:
         raise ValueError("缺少 HOPSWORKS_API_KEY，請在 .env 或系統環境變數設定。")
+
+
+def _add_trading_days(base_date: date, days: int) -> date:
+    """從 base_date 起往後推算 N 個交易日（僅跳過週末）。"""
+    d = base_date
+    remaining = max(int(days), 0)
+    while remaining > 0:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            remaining -= 1
+    return d
 
 
 # ── Modal 設定區 ──────────────────────────────────────────────────
@@ -241,7 +252,7 @@ def load_model_from_local(model_dir: str = None):
 
 
 # ── Step 3：執行預測 ──────────────────────────────────────────────
-def run_inference(models, feature_cols: list, latest_row: pd.Series, metadata: dict = None) -> dict:
+def run_inference(models, feature_cols: list, latest_row: pd.Series, latest_date: date, metadata: dict = None) -> dict:
     """用最新特徵預測目標期報酬率，並換算預測收盤價"""
     print("  [3/4] 執行推論...")
 
@@ -287,10 +298,13 @@ def run_inference(models, feature_cols: list, latest_row: pd.Series, metadata: d
     predicted_price = current_price * (1 + predicted_return)
     change_pct      = predicted_return * 100
     direction       = "⬆ 看漲" if change_pct > 0 else "⬇ 看跌"
+    predicted_for_date = _add_trading_days(latest_date, horizon_days)
 
     result = {
         "ticker":          TICKER,
-        "prediction_date": str(date.today()),
+        "prediction_date": str(latest_date),
+        "predicted_for_date": str(predicted_for_date),
+        "target_horizon_days": horizon_days,
         "current_close":   round(current_price, 4),
         "predicted_close": round(predicted_price, 4),
         "change_pct":      round(change_pct, 4),
@@ -333,13 +347,16 @@ def save_prediction_to_hopsworks(result: dict):
                     description=f"{TICKER} daily close prediction results",
                     online_enabled=True,   # 開啟 online store 供 UI 即時讀取
                 )
-                fg.insert(df_pred)
+                fg.insert(df_pred, write_options={"wait_for_job": True})
                 used_version = candidate_version
                 break
             except Exception as e:
                 err_msg = str(e)
                 if "already exists" in err_msg.lower() and "table" in err_msg.lower():
                     print(f"  ⚠ v{candidate_version} 建立失敗（table 已存在），嘗試下一個版本...")
+                    continue
+                if "not compatible with feature group schema" in err_msg.lower() or "does not exist in feature group" in err_msg.lower():
+                    print(f"  ⚠ v{candidate_version} schema 不相容，嘗試下一個版本...")
                     continue
                 raise
 
@@ -376,7 +393,7 @@ def run_pipeline():
         models, feature_cols, metadata = load_model_from_local()
 
     # Step 3
-    result = run_inference(models, feature_cols, latest_row, metadata)
+    result = run_inference(models, feature_cols, latest_row, latest_date, metadata)
 
     # Step 4
     save_prediction_to_hopsworks(result)
@@ -409,6 +426,8 @@ try:
         run_pipeline()
 
 except ImportError:
-    # Modal 未安裝時，直接當普通 Python 腳本跑
-    if __name__ == "__main__":
-        run_pipeline()
+    pass
+
+
+if __name__ == "__main__":
+    run_pipeline()
