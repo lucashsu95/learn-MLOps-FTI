@@ -19,8 +19,11 @@ import json
 import warnings
 import numpy as np
 import pandas as pd
+import yfinance as yf
 from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
+import hopsworks
+import joblib
 
 warnings.filterwarnings("ignore")
 load_dotenv()
@@ -55,11 +58,11 @@ MODAL_IMAGE_PACKAGES = [
 ]
 # ─────────────────────────────────────────────────────────────────
 
-MARKET_TICKERS = {
-    "spy": "SPY",
-    "qqq": "QQQ",
-    "vix": "^VIX",
-}
+# Import from shared modules
+from src.features import calculate_technical_indicators, calculate_market_context, get_fundamentals_from_info
+from src.config import get_config
+from src.constants import MARKET_TICKERS, INFERENCE_HISTORY_PERIOD, PREDICTION_CLIP_RANGE
+from src.utils import add_trading_days, print_success, print_warning, print_step, print_section
 
 
 def _validate_hopsworks_config() -> None:
@@ -72,13 +75,7 @@ def _validate_hopsworks_config() -> None:
 
 def _add_trading_days(base_date: date, days: int) -> date:
     """從 base_date 起往後推算 N 個交易日（僅跳過週末）。"""
-    d = base_date
-    remaining = max(int(days), 0)
-    while remaining > 0:
-        d += timedelta(days=1)
-        if d.weekday() < 5:
-            remaining -= 1
-    return d
+    return add_trading_days(base_date, days)
 
 
 # ── Modal 設定區 ──────────────────────────────────────────────────
@@ -98,103 +95,43 @@ def _get_modal_app():
 
 
 # ── Step 1：取得最新特徵 ───────────────────────────────────────────
-def fetch_latest_features(ticker: str) -> pd.Series:
+def fetch_latest_features(ticker: str) -> tuple:
     """抓今日最新一筆資料，計算出所有特徵，回傳一個 Series"""
     import yfinance as yf
-
-    print(f"  [1/4] 抓取 {ticker} 最新資料...")
-
-    t   = yf.Ticker(ticker)
-    df  = t.history(period="120d")  # 需要足夠長度計算 MA50 / RSI14
-
+    
+    print_step(1, 4, f"抓取 {ticker} 最新資料...")
+    
+    t = yf.Ticker(ticker)
+    df = t.history(period=INFERENCE_HISTORY_PERIOD)
+    
     if df.empty:
         raise ValueError(f"無法取得 {ticker} 資料")
-
+    
     df.index = pd.to_datetime(df.index).tz_localize(None)
     df.columns = [c.lower() for c in df.columns]
-    close  = df["close"]
-    high   = df["high"]
-    low    = df["low"]
-    volume = df["volume"]
-
-    # ── 技術指標（與 feature_pipeline.py 完全一致）──
-    df["ma_5"]  = close.rolling(5).mean()
-    df["ma_20"] = close.rolling(20).mean()
-    df["ma_50"] = close.rolling(50).mean()
-
-    delta = close.diff()
-    gain  = delta.clip(lower=0).rolling(14).mean()
-    loss  = (-delta.clip(upper=0)).rolling(14).mean()
-    rs    = gain / loss.replace(0, np.nan)
-    df["rsi_14"] = 100 - (100 / (1 + rs))
-
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    df["macd"]        = ema12 - ema26
-    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
-    df["macd_hist"]   = df["macd"] - df["macd_signal"]
-
-    df["bb_mid"]   = close.rolling(20).mean()
-    bb_std         = close.rolling(20).std()
-    df["bb_upper"] = df["bb_mid"] + 2 * bb_std
-    df["bb_lower"] = df["bb_mid"] - 2 * bb_std
-    df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
-
-    df["close_vs_ma20"] = close / df["ma_20"] - 1
-    df["close_vs_ma50"] = close / df["ma_50"] - 1
-    df["ma20_vs_ma50"]  = df["ma_20"] / df["ma_50"] - 1
-    df["bb_position"]   = (close - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
-
-    tr = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low  - close.shift()).abs()
-    ], axis=1).max(axis=1)
-    df["atr_14"] = tr.rolling(14).mean()
-
-    df["volume_ma20"] = volume.rolling(20).mean()
-    df["volume_ratio"] = volume / df["volume_ma20"]
-    df["return_1d"]  = close.pct_change(1)
-    df["return_5d"]  = close.pct_change(5)
-    df["return_20d"] = close.pct_change(20)
-
-    # ── 市場脈絡（SPY / QQQ / VIX）──
-    market_df = pd.DataFrame(index=df.index)
+    
+    # 使用共享模組計算技術指標（取代原本 60+ 行重複程式碼）
+    df = calculate_technical_indicators(df)
+    
+    # 市場脈絡
+    market_data = {}
     for key, symbol in MARKET_TICKERS.items():
-        hist = yf.Ticker(symbol).history(period="120d")
-        if hist.empty:
-            continue
-        hist.index = pd.to_datetime(hist.index).tz_localize(None)
-        market_df = market_df.join(hist["Close"].rename(f"{key}_close"), how="left")
-
-    market_df = market_df.ffill().bfill()
-    if "spy_close" in market_df.columns:
-        df["spy_return_1d"] = market_df["spy_close"].pct_change(1)
-        df["spy_return_5d"] = market_df["spy_close"].pct_change(5)
-    if "qqq_close" in market_df.columns:
-        df["qqq_return_1d"] = market_df["qqq_close"].pct_change(1)
-        df["qqq_return_5d"] = market_df["qqq_close"].pct_change(5)
-    if "vix_close" in market_df.columns:
-        df["vix_level"] = market_df["vix_close"]
-        df["vix_change_1d"] = market_df["vix_close"].pct_change(1)
-        df["vix_ma20"] = market_df["vix_close"].rolling(20).mean()
-        df["vix_vs_ma20"] = df["vix_level"] / df["vix_ma20"] - 1
-
-    # ── 基本面（取最新值）──
+        hist = yf.Ticker(symbol).history(period=INFERENCE_HISTORY_PERIOD)
+        if not hist.empty:
+            market_data[key] = hist
+    
+    df = calculate_market_context(df, market_data)
+    
+    # 基本面
     info = t.info
-    df["pe_ratio"]      = info.get("trailingPE",    None)
-    df["forward_pe"]    = info.get("forwardPE",     None)
-    df["eps"]           = info.get("trailingEps",   None)
-    df["price_to_book"] = info.get("priceToBook",   None)
-    df["profit_margin"] = info.get("profitMargins", None)
-    df["revenue_growth"]  = info.get("revenueGrowth",  None)
-    df["earnings_growth"] = info.get("earningsGrowth", None)
-
-    # 取最後一筆（今日）
+    fundamentals = get_fundamentals_from_info(info)
+    for key, val in fundamentals.items():
+        df[key] = val
+    
     latest = df.iloc[-1]
     latest_date = df.index[-1].date()
-    print(f"  ✓ 最新資料日期：{latest_date}  收盤價：{latest['close']:.2f}")
-
+    print_success(f"最新資料日期：{latest_date} 收盤價：{latest['close']:.2f}")
+    
     return latest, latest_date
 
 
@@ -376,9 +313,7 @@ def save_prediction_to_hopsworks(result: dict):
 
 # ── 核心執行函式（Modal & 本地共用）────────────────────────────────
 def run_pipeline():
-    print("=" * 55)
-    print(f"  Stock Inference Pipeline  |  {datetime.now():%Y-%m-%d %H:%M}")
-    print("=" * 55)
+    print_section(f"  Stock Inference Pipeline  |  {datetime.now():%Y-%m-%d %H:%M}")
 
     _validate_hopsworks_config()
 

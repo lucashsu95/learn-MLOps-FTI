@@ -5,16 +5,17 @@ Hugging Face Spaces 上的 Gradio UI。
 從 Hopsworks 讀取最新預測 + 歷史走勢，以互動圖表呈現。
 
 部署方式：
-  1. 在 HF Spaces 新建 Space（SDK: Gradio）
-  2. 上傳此檔案 + requirements.txt
-    3. 在 Space Settings → Secrets 加入 HOPSWORKS_PROJECT 與 HOPSWORKS_API_KEY
+1. 在 HF Spaces 新建 Space（SDK: Gradio）
+2. 上傳此檔案 + requirements.txt
+3. 在 Space Settings → Secrets 加入 HOPSWORKS_PROJECT 與 HOPSWORKS_API_KEY
 
 本地測試：
-    pip install gradio plotly hopsworks yfinance
-    python app.py
+pip install gradio plotly hopsworks yfinance
+python app.py
 """
 
 import os
+import sys
 import json
 import warnings
 from datetime import datetime, timedelta
@@ -26,16 +27,26 @@ import gradio as gr
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# 匯入共享模組
+sys.path.insert(0, os.path.dirname(__file__))
+from src.constants import (
+    UI_HISTORY_DAYS,
+    FEATURE_GROUP_MAX_VERSION_SEARCH,
+    GRADIO_SERVER_PORT,
+    GRADIO_SERVER_NAME,
+)
+from src.utils import add_trading_days, next_trading_day
+
 warnings.filterwarnings("ignore")
 load_dotenv()
 
 # ── 設定 ──────────────────────────────────────────────────────────
-TICKER             = os.environ.get("TICKER", "AAPL").upper()
-HOPSWORKS_PROJECT  = os.environ.get("HOPSWORKS_PROJECT")
-HOPSWORKS_API_KEY  = os.environ.get("HOPSWORKS_API_KEY", "")
-PREDICTION_GROUP   = f"{TICKER.lower()}_predictions"
-FEATURE_GROUP      = f"{TICKER.lower()}_stock_features"
-HISTORY_DAYS       = 90   # UI 上顯示最近幾天的走勢
+TICKER = os.environ.get("TICKER", "AAPL").upper()
+HOPSWORKS_PROJECT = os.environ.get("HOPSWORKS_PROJECT")
+HOPSWORKS_API_KEY = os.environ.get("HOPSWORKS_API_KEY", "")
+PREDICTION_GROUP = f"{TICKER.lower()}_predictions"
+FEATURE_GROUP = f"{TICKER.lower()}_stock_features"
+HISTORY_DAYS = UI_HISTORY_DAYS
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -56,7 +67,7 @@ def _hopsworks_login():
     )
 
 
-def _get_latest_feature_group(fs, name: str, min_version: int = 1, max_version: int = 20):
+def _get_latest_feature_group(fs, name: str, min_version: int = 1, max_version: int = FEATURE_GROUP_MAX_VERSION_SEARCH):
     """回傳最新可讀取的 Feature Group。"""
     for version in range(max_version, min_version - 1, -1):
         try:
@@ -76,13 +87,13 @@ def fetch_prediction(fs=None) -> dict:
     try:
         if fs is None:
             project = _hopsworks_login()
-            fs      = project.get_feature_store()
-        fg, _   = _get_latest_feature_group(fs, PREDICTION_GROUP)
-        df      = fg.read()
+            fs = project.get_feature_store()
+        fg, _ = _get_latest_feature_group(fs, PREDICTION_GROUP)
+        df = fg.read()
         if df is None or df.empty:
             raise RuntimeError(f"{PREDICTION_GROUP} 沒有可用資料。")
-        df      = df.sort_values("prediction_date", ascending=False)
-        latest  = df.iloc[0].to_dict()
+        df = df.sort_values("prediction_date", ascending=False)
+        latest = df.iloc[0].to_dict()
         return latest
     except Exception as e:
         hopsworks_error = str(e)
@@ -100,7 +111,7 @@ def fetch_prediction(fs=None) -> dict:
 def fetch_history(fs=None) -> pd.DataFrame:
     """讀取近期歷史收盤價 + 技術指標（直接用 yfinance 確保包含最新交易日）"""
     import yfinance as yf
-    t  = yf.Ticker(TICKER)
+    t = yf.Ticker(TICKER)
     df = t.history(period=f"{HISTORY_DAYS}d")
     df.index = pd.to_datetime(df.index).tz_localize(None)
     df = df.reset_index()
@@ -110,8 +121,8 @@ def fetch_history(fs=None) -> pd.DataFrame:
     df["ma_20"] = close.rolling(20).mean()
     df["ma_50"] = close.rolling(50).mean()
     delta = close.diff()
-    gain  = delta.clip(lower=0).rolling(14).mean()
-    loss  = (-delta.clip(upper=0)).rolling(14).mean()
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
     df["rsi_14"] = 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
     return df
 
@@ -119,37 +130,37 @@ def fetch_history(fs=None) -> pd.DataFrame:
 def _mock_prediction(reason: str = None) -> dict:
     """示範用假資料（Hopsworks & 本地都沒資料時）"""
     import yfinance as yf
-    t     = yf.Ticker(TICKER)
+    t = yf.Ticker(TICKER)
     price = t.fast_info["last_price"]
     mock_pred = price * (1 + np.random.uniform(-0.01, 0.02))
     note = "⚠ 示範用模擬資料，非真實模型預測"
     if reason:
         note = f"{note}｜原因：{reason}"
     return {
-        "ticker":          TICKER,
+        "ticker": TICKER,
         "prediction_date": str(datetime.today().date()),
-        "current_close":   round(price, 4),
+        "current_close": round(price, 4),
         "predicted_close": round(mock_pred, 4),
-        "change_pct":      round((mock_pred - price) / price * 100, 4),
-        "direction":       "⬆ 看漲" if mock_pred > price else "⬇ 看跌",
-        "predicted_at":    datetime.now().isoformat(),
-        "_note":           note,
+        "change_pct": round((mock_pred - price) / price * 100, 4),
+        "direction": "⬆ 看漲" if mock_pred > price else "⬇ 看跌",
+        "predicted_at": datetime.now().isoformat(),
+        "_note": note,
     }
 
 
 # ── 圖表繪製 ──────────────────────────────────────────────────────
 COLORS = {
-    "bg":        "#0d1117",
-    "surface":   "#161b22",
-    "border":    "#30363d",
-    "text":      "#e6edf3",
-    "subtext":   "#8b949e",
-    "green":     "#3fb950",
-    "red":       "#f85149",
-    "blue":      "#58a6ff",
-    "yellow":    "#d29922",
-    "purple":    "#bc8cff",
-    "orange":    "#ffa657",
+    "bg": "#0d1117",
+    "surface": "#161b22",
+    "border": "#30363d",
+    "text": "#e6edf3",
+    "subtext": "#8b949e",
+    "green": "#3fb950",
+    "red": "#f85149",
+    "blue": "#58a6ff",
+    "yellow": "#d29922",
+    "purple": "#bc8cff",
+    "orange": "#ffa657",
 }
 
 
@@ -168,8 +179,8 @@ def build_price_chart(df: pd.DataFrame, prediction: dict) -> go.Figure:
     # ── K 線圖 ──
     fig.add_trace(go.Candlestick(
         x=dates,
-        open=df["open"],  close=df["close"],
-        high=df["high"],  low=df["low"],
+        open=df["open"], close=df["close"],
+        high=df["high"], low=df["low"],
         increasing_line_color=COLORS["green"],
         decreasing_line_color=COLORS["red"],
         name="K 線",
@@ -194,10 +205,10 @@ def build_price_chart(df: pd.DataFrame, prediction: dict) -> go.Figure:
     # ── 預測點（依目標天期）──
     base_date = str(prediction.get("prediction_date") or dates[-1])
     horizon_days = int(prediction.get("target_horizon_days", 1) or 1)
-    pred_date = prediction.get("predicted_for_date") or _add_trading_days(base_date, horizon_days)
+    pred_date = prediction.get("predicted_for_date") or _add_trading_days_str(base_date, horizon_days)
     pred_price = prediction["predicted_close"]
     curr_price = prediction["current_close"]
-    is_up      = pred_price >= curr_price
+    is_up = pred_price >= curr_price
     pred_color = COLORS["green"] if is_up else COLORS["red"]
 
     # 虛線連接基準日→目標日預測
@@ -215,7 +226,7 @@ def build_price_chart(df: pd.DataFrame, prediction: dict) -> go.Figure:
     # 預測標籤
     fig.add_annotation(
         x=pred_date, y=pred_price,
-        text=f"  ${pred_price:.2f}<br>  ({prediction['change_pct']:+.2f}%)",
+        text=f" ${pred_price:.2f}<br> ({prediction['change_pct']:+.2f}%)",
         showarrow=False,
         font=dict(color=pred_color, size=13, family="monospace"),
         xanchor="left",
@@ -278,23 +289,12 @@ def build_price_chart(df: pd.DataFrame, prediction: dict) -> go.Figure:
     return fig
 
 
-def _next_trading_day(date_str: str) -> str:
-    """計算下一個交易日（簡單跳過週末）"""
-    d = datetime.strptime(date_str[:10], "%Y-%m-%d") + timedelta(days=1)
-    while d.weekday() >= 5:  # 5=Sat, 6=Sun
-        d += timedelta(days=1)
-    return d.strftime("%Y-%m-%d")
-
-
-def _add_trading_days(date_str: str, days: int) -> str:
-    """從指定日期往後推算 N 個交易日（僅跳過週末）。"""
-    d = datetime.strptime(date_str[:10], "%Y-%m-%d")
-    remaining = max(int(days), 0)
-    while remaining > 0:
-        d += timedelta(days=1)
-        if d.weekday() < 5:
-            remaining -= 1
-    return d.strftime("%Y-%m-%d")
+def _add_trading_days_str(date_str: str, days: int) -> str:
+    """從指定日期往後推算 N 個交易日（返回字串）。"""
+    from datetime import date
+    d = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+    result = add_trading_days(d, days)
+    return str(result)
 
 
 # ── Gradio UI ─────────────────────────────────────────────────────
@@ -328,7 +328,7 @@ body, .gradio-container {
     color: #e6edf3;
     line-height: 1;
 }
-.price-change-up   { color: #3fb950; font-size: 20px; font-family: monospace; }
+.price-change-up { color: #3fb950; font-size: 20px; font-family: monospace; }
 .price-change-down { color: #f85149; font-size: 20px; font-family: monospace; }
 .stat-grid {
     display: grid;
@@ -349,49 +349,49 @@ body, .gradio-container {
 
 
 def render_summary_html(prediction: dict) -> str:
-    curr  = prediction.get("current_close", 0)
-    pred  = prediction.get("predicted_close", 0)
-    pct   = prediction.get("change_pct", 0)
+    curr = prediction.get("current_close", 0)
+    pred = prediction.get("predicted_close", 0)
+    pct = prediction.get("change_pct", 0)
     prediction_date = str(prediction.get("prediction_date", ""))
     horizon_days = int(prediction.get("target_horizon_days", 1) or 1)
-    forecast_date = prediction.get("predicted_for_date") or (_add_trading_days(prediction_date, horizon_days) if prediction_date else "—")
+    forecast_date = prediction.get("predicted_for_date") or (_add_trading_days_str(prediction_date, horizon_days) if prediction_date else "—")
     is_up = pct >= 0
     arrow = "▲" if is_up else "▼"
-    cls   = "price-change-up" if is_up else "price-change-down"
-    note  = prediction.get("_note", "")
+    cls = "price-change-up" if is_up else "price-change-down"
+    note = prediction.get("_note", "")
     updated = prediction.get("predicted_at", "")[:16].replace("T", " ")
 
     return f"""
-    <div class="header-card">
-        <div class="ticker-label">{TICKER} · {horizon_days}-Trading-Day Close Prediction</div>
-        <div class="price-main">${pred:,.2f}</div>
-        <div class="{cls}">{arrow} {abs(pct):.2f}%&nbsp;&nbsp;from ${curr:,.2f}</div>
-        <div class="stat-grid">
-            <div class="stat-card">
-                <div class="stat-label">今日收盤</div>
-                <div class="stat-value">${curr:,.2f}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">預測目標價</div>
-                <div class="stat-value" style="color:{'#3fb950' if is_up else '#f85149'}">${pred:,.2f}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">預測方向</div>
-                <div class="stat-value" style="color:{'#3fb950' if is_up else '#f85149'}">{prediction.get('direction','—')}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">資料日期</div>
-                <div class="stat-value">{prediction_date or '—'}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">預測交易日</div>
-                <div class="stat-value">{forecast_date}</div>
-            </div>
+<div class="header-card">
+    <div class="ticker-label">{TICKER} · {horizon_days}-Trading-Day Close Prediction</div>
+    <div class="price-main">${pred:,.2f}</div>
+    <div class="{cls}">{arrow} {abs(pct):.2f}%&nbsp;&nbsp;from ${curr:,.2f}</div>
+    <div class="stat-grid">
+        <div class="stat-card">
+            <div class="stat-label">今日收盤</div>
+            <div class="stat-value">${curr:,.2f}</div>
         </div>
-        {'<div style="margin-top:12px;padding:8px 12px;background:#2d1e00;border:1px solid #7d4e00;border-radius:6px;font-size:12px;color:#ffa657;">'+note+'</div>' if note else ''}
-        <div class="footer-note">最後更新：{updated} UTC</div>
+        <div class="stat-card">
+            <div class="stat-label">預測目標價</div>
+            <div class="stat-value" style="color:{'#3fb950' if is_up else '#f85149'}">${pred:,.2f}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">預測方向</div>
+            <div class="stat-value" style="color:{'#3fb950' if is_up else '#f85149'}">{prediction.get('direction','—')}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">資料日期</div>
+            <div class="stat-value">{prediction_date or '—'}</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">預測交易日</div>
+            <div class="stat-value">{forecast_date}</div>
+        </div>
     </div>
-    """
+    {'<div style="margin-top:12px;padding:8px 12px;background:#2d1e00;border:1px solid #7d4e00;border-radius:6px;font-size:12px;color:#ffa657;">'+note+'</div>' if note else ''}
+    <div class="footer-note">最後更新：{updated} UTC</div>
+</div>
+"""
 
 
 def refresh_dashboard():
@@ -399,22 +399,22 @@ def refresh_dashboard():
     fs = None
     try:
         project = _hopsworks_login()
-        fs      = project.get_feature_store()
+        fs = project.get_feature_store()
     except Exception:
         pass
 
     try:
         prediction = fetch_prediction(fs)
-        history    = fetch_history(fs)
-        chart      = build_price_chart(history, prediction)
-        summary    = render_summary_html(prediction)
-        status     = "✅ 資料更新成功"
+        history = fetch_history(fs)
+        chart = build_price_chart(history, prediction)
+        summary = render_summary_html(prediction)
+        status = "✅ 資料更新成功"
     except Exception as e:
         prediction = _mock_prediction()
-        history    = fetch_history(fs)
-        chart      = build_price_chart(history, prediction)
-        summary    = render_summary_html(prediction)
-        status     = f"⚠ 使用示範資料（{str(e)[:60]}）"
+        history = fetch_history(fs)
+        chart = build_price_chart(history, prediction)
+        summary = render_summary_html(prediction)
+        status = f"⚠ 使用示範資料（{str(e)[:60]}）"
 
     return summary, chart, status
 
@@ -423,19 +423,19 @@ def refresh_dashboard():
 with gr.Blocks(css=CSS, title=f"{TICKER} Stock Predictor") as demo:
 
     gr.HTML(f"""
-    <div style="padding:20px 0 8px; display:flex; align-items:center; gap:12px;">
-        <div style="font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:600; color:#e6edf3;">
-            📈 {TICKER} Stock Predictor
-        </div>
-        <div style="font-size:12px; color:#8b949e; font-family:monospace;">
-            Serverless ML · Hopsworks + Modal + HF Spaces
-        </div>
+<div style="padding:20px 0 8px; display:flex; align-items:center; gap:12px;">
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:22px; font-weight:600; color:#e6edf3;">
+        📈 {TICKER} Stock Predictor
     </div>
-    """)
+    <div style="font-size:12px; color:#8b949e; font-family:monospace;">
+        Serverless ML · Hopsworks + Modal + HF Spaces
+    </div>
+</div>
+""")
 
     summary_html = gr.HTML()
-    chart_plot   = gr.Plot(label="")
-    status_text  = gr.Textbox(
+    chart_plot = gr.Plot(label="")
+    status_text = gr.Textbox(
         label="狀態", interactive=False,
         elem_id="status-box",
     )
@@ -453,14 +453,14 @@ with gr.Blocks(css=CSS, title=f"{TICKER} Stock Predictor") as demo:
     )
 
     gr.HTML("""
-    <div style="margin-top:24px; padding:16px; background:#161b22; border:1px solid #30363d;
-                border-radius:8px; font-size:12px; color:#8b949e; line-height:1.8;">
-        <strong style="color:#e6edf3;">免責聲明</strong><br>
-        本工具僅供學習與研究目的，預測結果不構成任何投資建議。
-        股票市場存在高度不確定性，過去表現不代表未來結果。
-    </div>
-    """)
+<div style="margin-top:24px; padding:16px; background:#161b22; border:1px solid #30363d;
+    border-radius:8px; font-size:12px; color:#8b949e; line-height:1.8;">
+    <strong style="color:#e6edf3;">免責聲明</strong><br>
+    本工具僅供學習與研究目的，預測結果不構成任何投資建議。
+    股票市場存在高度不確定性，過去表現不代表未來結果。
+</div>
+""")
 
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(server_name=GRADIO_SERVER_NAME, server_port=GRADIO_SERVER_PORT)

@@ -1,32 +1,61 @@
 """
+feature_pipeline.py
+------------------
 抓取股票歷史數據、計算技術指標、加入財報基本面數據，
 最後寫入 Hopsworks Feature Store。
 
 使用方式：
-    pip install yfinance pandas_ta hopsworks scikit-learn
+    pip install yfinance pandas hopsworks
     python feature_pipeline.py
 
-環境變數（或直接改 HOPSWORKS_API_KEY 常數）：
-    export HOPSWORKS_API_KEY="your_api_key_here"
+環境變數（或直接改 .env）：
+    TICKER=AAPL
+    HOPSWORKS_PROJECT=your_project_name
+    HOPSWORKS_API_KEY=your_api_key
 """
 
 import os
+import sys
 import warnings
 import pandas as pd
-import numpy as np
 import yfinance as yf
 from dotenv import load_dotenv
+
+# 匯入共享模組
+sys.path.insert(0, os.path.dirname(__file__))
+from src.features import (
+    calculate_technical_indicators,
+    calculate_market_context,
+    calculate_target,
+    get_fundamentals_from_info,
+    merge_fundamentals,
+)
+from src.constants import (
+    MARKET_TICKERS,
+    DEFAULT_HISTORY_PERIOD,
+    FEATURE_GROUP_VERSION_MAX_OFFSET,
+)
+from src.utils import (
+    print_success,
+    print_warning,
+    print_error,
+    print_step,
+    print_section,
+)
 
 warnings.filterwarnings("ignore")
 load_dotenv()
 
-# ── 設定區（改這裡就好） ──────────────────────────────────────────
-TICKER = os.environ.get("TICKER", "AAPL").upper()  # 要預測的股票代號
-PERIOD = os.environ.get("PERIOD", "3y")  # 歷史資料長度（例如 3y / 5y / 10y）
-HOPSWORKS_PROJECT = os.environ.get("HOPSWORKS_PROJECT")   # Hopsworks 上的 project 名稱
+# ── 設定區（向後相容）────────────────────────────────────────────
+TICKER = os.environ.get("TICKER", "AAPL").upper()
+PERIOD = os.environ.get("PERIOD", DEFAULT_HISTORY_PERIOD)
+HOPSWORKS_PROJECT = os.environ.get("HOPSWORKS_PROJECT")
 HOPSWORKS_API_KEY = os.environ.get("HOPSWORKS_API_KEY")
 FEATURE_GROUP_NAME = f"{TICKER.lower()}_stock_features"
+
+
 def _get_int_env(name: str, default: int) -> int:
+    """從環境變數取得整數值（向後相容）。"""
     raw = os.environ.get(name)
     if raw is None or raw == "":
         return default
@@ -38,12 +67,6 @@ def _get_int_env(name: str, default: int) -> int:
 
 FEATURE_GROUP_VERSION = _get_int_env("FEATURE_GROUP_VERSION", 1)
 # ─────────────────────────────────────────────────────────────────
-
-MARKET_TICKERS = {
-    "spy": "SPY",
-    "qqq": "QQQ",
-    "vix": "^VIX",
-}
 
 
 def _safe_history(symbol: str, period: str) -> pd.DataFrame:
@@ -58,7 +81,7 @@ def _safe_history(symbol: str, period: str) -> pd.DataFrame:
             hist = yf.Ticker(symbol).history(period=p)
             if hist is not None and not hist.empty:
                 if p != period:
-                    print(f"    ⚠ {symbol} 期間 {period} 失敗，改用 {p}")
+                    print_warning(f"{symbol} 期間 {period} 失敗，改用 {p}")
                 return hist
         except Exception:
             continue
@@ -67,7 +90,7 @@ def _safe_history(symbol: str, period: str) -> pd.DataFrame:
 
 def fetch_price_data(ticker: str, period: str) -> pd.DataFrame:
     """下載 OHLCV 歷史數據"""
-    print(f"[1/4] 下載 {ticker} 歷史價格資料（{period}）...")
+    print_step(1, 4, f"下載 {ticker} 歷史價格資料（{period}）...")
     df = _safe_history(ticker, period)
 
     if df.empty:
@@ -75,154 +98,61 @@ def fetch_price_data(ticker: str, period: str) -> pd.DataFrame:
 
     # 整理欄位
     df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-    df.index = pd.to_datetime(df.index).tz_localize(None)  # 移除 timezone
+    df.index = pd.to_datetime(df.index).tz_localize(None)
     df.index.name = "date"
     df.columns = [c.lower() for c in df.columns]
-    print(f"    ✓ 取得 {len(df)} 筆資料，從 {df.index[0].date()} 到 {df.index[-1].date()}")
+    print_success(f"取得 {len(df)} 筆資料，從 {df.index[0].date()} 到 {df.index[-1].date()}")
     return df
 
 
 def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """計算技術指標（不依賴 pandas_ta，手動計算確保穩定）"""
-    print("[2/4] 計算技術指標...")
-
-    close = df["close"]
-    high = df["high"]
-    low = df["low"]
-    volume = df["volume"]
-
-    # ── 移動平均 ──
-    df["ma_5"]  = close.rolling(5).mean()
-    df["ma_20"] = close.rolling(20).mean()
-    df["ma_50"] = close.rolling(50).mean()
-
-    # ── RSI（14日）──
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
-    rs = gain / loss.replace(0, np.nan)
-    df["rsi_14"] = 100 - (100 / (1 + rs))
-
-    # ── MACD ──
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    df["macd"]        = ema12 - ema26
-    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
-    df["macd_hist"]   = df["macd"] - df["macd_signal"]
-
-    # ── Bollinger Bands ──
-    df["bb_mid"]   = close.rolling(20).mean()
-    bb_std         = close.rolling(20).std()
-    df["bb_upper"] = df["bb_mid"] + 2 * bb_std
-    df["bb_lower"] = df["bb_mid"] - 2 * bb_std
-    df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
-
-    df["close_vs_ma20"] = close / df["ma_20"] - 1
-    df["close_vs_ma50"] = close / df["ma_50"] - 1
-    df["ma20_vs_ma50"]  = df["ma_20"] / df["ma_50"] - 1
-    df["bb_position"]   = (close - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
-
-    # ── ATR（平均真實波幅）──
-    tr = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low  - close.shift()).abs()
-    ], axis=1).max(axis=1)
-    df["atr_14"] = tr.rolling(14).mean()
-
-    # ── 成交量指標 ──
-    df["volume_ma20"] = volume.rolling(20).mean()
-    df["volume_ratio"] = volume / df["volume_ma20"]  # 今日量 / 20日均量
-
-    # ── 價格動能 ──
-    df["return_1d"]  = close.pct_change(1)
-    df["return_5d"]  = close.pct_change(5)
-    df["return_20d"] = close.pct_change(20)
-
-    # ── 目標欄位：明日報酬率 ──
-    df["target_next_return"] = close.shift(-1) / close - 1
-
-    print(f"    ✓ 新增 {len([c for c in df.columns if c not in ['open','high','low','close','volume']])} 個特徵欄位")
+    """計算技術指標（使用共享模組）"""
+    print_step(2, 4, "計算技術指標...")
+    df = calculate_technical_indicators(df)
+    
+    # 計算新增的特徵數量
+    original_cols = {'open', 'high', 'low', 'close', 'volume'}
+    new_features = [c for c in df.columns if c not in original_cols]
+    print_success(f"新增 {len(new_features)} 個特徵欄位")
     return df
 
 
 def add_market_features(df: pd.DataFrame, period: str) -> pd.DataFrame:
     """加入市場脈絡特徵：SPY/QQQ 報酬與 VIX 水位/變化。"""
-    print("[2.5/4] 加入市場脈絡特徵（SPY / QQQ / VIX）...")
+    print_step(2.5, 4, "加入市場脈絡特徵（SPY / QQQ / VIX）...")
 
-    market_df = pd.DataFrame(index=df.index)
-
+    market_data = {}
     for key, symbol in MARKET_TICKERS.items():
         hist = _safe_history(symbol, period)
         if hist.empty:
-            print(f"    ⚠ {symbol} 無資料，略過 {key} 特徵")
+            print_warning(f"{symbol} 無資料，略過 {key} 特徵")
             continue
+        market_data[key] = hist
 
-        hist.index = pd.to_datetime(hist.index).tz_localize(None)
-        close_col = hist["Close"].rename(f"{key}_close")
-        market_df = market_df.join(close_col, how="left")
-
-    market_df = market_df.ffill().bfill()
-
-    if "spy_close" in market_df.columns:
-        market_df["spy_return_1d"] = market_df["spy_close"].pct_change(1)
-        market_df["spy_return_5d"] = market_df["spy_close"].pct_change(5)
-    if "qqq_close" in market_df.columns:
-        market_df["qqq_return_1d"] = market_df["qqq_close"].pct_change(1)
-        market_df["qqq_return_5d"] = market_df["qqq_close"].pct_change(5)
-    if "vix_close" in market_df.columns:
-        market_df["vix_level"] = market_df["vix_close"]
-        market_df["vix_change_1d"] = market_df["vix_close"].pct_change(1)
-        market_df["vix_ma20"] = market_df["vix_close"].rolling(20).mean()
-        market_df["vix_vs_ma20"] = market_df["vix_close"] / market_df["vix_ma20"] - 1
-
-    market_feature_cols = [
-        "spy_return_1d", "spy_return_5d",
-        "qqq_return_1d", "qqq_return_5d",
-        "vix_level", "vix_change_1d", "vix_vs_ma20",
-    ]
-
-    available_cols = [c for c in market_feature_cols if c in market_df.columns]
-    df = df.join(market_df[available_cols], how="left")
-    print(f"    ✓ 新增市場特徵: {available_cols}")
+    df = calculate_market_context(df, market_data)
+    
+    # 報告新增的市場特徵
+    market_cols = [c for c in df.columns if any(k in c for k in ['spy', 'qqq', 'vix'])]
+    print_success(f"新增市場特徵: {market_cols}")
     return df
 
 
 def fetch_fundamental_data(ticker: str) -> dict:
     """抓取基本面數據（財報資料，每季更新一次）"""
-    print("[3/4] 抓取基本面數據...")
+    print_step(3, 4, "抓取基本面數據...")
     t = yf.Ticker(ticker)
     info = t.info
 
-    fundamentals = {
-        "pe_ratio":         info.get("trailingPE",       None),
-        "forward_pe":       info.get("forwardPE",        None),
-        "eps":              info.get("trailingEps",      None),
-        "price_to_book":    info.get("priceToBook",      None),
-        "debt_to_equity":   info.get("debtToEquity",     None),
-        "profit_margin":    info.get("profitMargins",    None),
-        "revenue_growth":   info.get("revenueGrowth",    None),
-        "earnings_growth":  info.get("earningsGrowth",   None),
-        "market_cap":       info.get("marketCap",        None),
-        "w52_high":         info.get("fiftyTwoWeekHigh", None),
-        "w52_low":          info.get("fiftyTwoWeekLow",  None),
-    }
+    fundamentals = get_fundamentals_from_info(info)
 
     # 印出哪些拿到、哪些是 None
     missing = [k for k, v in fundamentals.items() if v is None]
     if missing:
-        print(f"    ⚠ 以下基本面欄位為 None（yfinance 未回傳）: {missing}")
+        print_warning(f"以下基本面欄位為 None（yfinance 未回傳）: {missing}")
     available = [k for k, v in fundamentals.items() if v is not None]
-    print(f"    ✓ 成功取得: {available}")
+    print_success(f"成功取得: {available}")
 
     return fundamentals
-
-
-def merge_fundamentals(df: pd.DataFrame, fundamentals: dict) -> pd.DataFrame:
-    """將基本面數據（靜態）廣播到每一行"""
-    for key, val in fundamentals.items():
-        df[key] = val
-    return df
 
 
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -247,18 +177,18 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     # 加入 ticker 欄位
     df.insert(0, "ticker", TICKER)
 
-    print(f"    ✓ 清理後剩 {len(df)} 筆，欄位數: {len(df.columns)}")
+    print_success(f"清理後剩 {len(df)} 筆，欄位數: {len(df.columns)}")
     return df
 
 
 def save_to_hopsworks(df: pd.DataFrame) -> None:
     """寫入 Hopsworks Feature Store"""
-    print("[4/4] 連接 Hopsworks 並寫入 Feature Store...")
+    print_step(4, 4, "連接 Hopsworks 並寫入 Feature Store...")
     try:
         import hopsworks
     except ImportError:
-        print("    ✗ hopsworks 套件未安裝，執行: pip install hopsworks")
-        print("    （本地 debug 模式：印出前 5 筆資料）")
+        print_error("hopsworks 套件未安裝，執行: pip install hopsworks")
+        print_warning("（本地 debug 模式：印出前 5 筆資料）")
         print(df.head())
         return
 
@@ -271,7 +201,7 @@ def save_to_hopsworks(df: pd.DataFrame) -> None:
     used_version = None
 
     # 先從設定版本開始，若遇到「table already exists」衝突，往上遞增版本。
-    for offset in range(5):
+    for offset in range(FEATURE_GROUP_VERSION_MAX_OFFSET):
         candidate_version = FEATURE_GROUP_VERSION + offset
         try:
             fg = fs.get_or_create_feature_group(
@@ -289,25 +219,23 @@ def save_to_hopsworks(df: pd.DataFrame) -> None:
 
             # 常見情況：metadata 建立/寫入時，Hive table 已存在。
             if "already exists" in err_msg.lower() and "table" in err_msg.lower():
-                print(f"    ⚠ v{candidate_version} 建立失敗（table 已存在），嘗試下一個版本...")
+                print_warning(f"v{candidate_version} 建立失敗（table 已存在），嘗試下一個版本...")
                 continue
 
             # 既有版本 schema 不相容時，升版建立新 schema。
             if "not compatible with feature group schema" in err_msg.lower() or "does not exist in feature group" in err_msg.lower():
-                print(f"    ⚠ v{candidate_version} schema 不相容，嘗試下一個版本...")
+                print_warning(f"v{candidate_version} schema 不相容，嘗試下一個版本...")
                 continue
             raise
 
     if used_version is None:
         raise RuntimeError("無法建立或取得可用的 Feature Group，請檢查 Hopsworks 專案中的既有資料表。")
 
-    print(f"    ✓ 成功寫入 {len(df)} 筆資料到 Feature Group: {FEATURE_GROUP_NAME} v{used_version}")
+    print_success(f"成功寫入 {len(df)} 筆資料到 Feature Group: {FEATURE_GROUP_NAME} v{used_version}")
 
 
 def main():
-    print("=" * 55)
-    print(f"  Stock Feature Pipeline  |  Ticker: {TICKER}")
-    print("=" * 55)
+    print_section(f" Stock Feature Pipeline | Ticker: {TICKER}")
 
     df = fetch_price_data(TICKER, PERIOD)
     df = add_technical_indicators(df)
@@ -315,11 +243,12 @@ def main():
 
     fundamentals = fetch_fundamental_data(TICKER)
     df = merge_fundamentals(df, fundamentals)
+    df = calculate_target(df)  # 使用共享模組計算目標
     df = clean_dataframe(df)
 
     print(f"\n最終 DataFrame 欄位列表：")
     for col in df.columns:
-        print(f"  - {col}")
+        print(f" - {col}")
 
     save_to_hopsworks(df)
 
