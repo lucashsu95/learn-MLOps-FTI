@@ -1,0 +1,61 @@
+name: Model Retraining
+
+on:
+  schedule:
+    # Every Saturday at 01:30 UTC (same as Modal schedule)
+    - cron: '30 1 * * 6'
+  workflow_dispatch:
+
+jobs:
+  retrain:
+    name: Trigger Model Retraining
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+          cache-dependency-path: '0315/requirements.txt'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r 0315/requirements.txt
+      
+      - name: Run Feature Pipeline
+        run: |
+          cd 0315 && python feature_pipeline.py
+        env:
+          HOPSWORKS_PROJECT: ${{ secrets.HOPSWORKS_PROJECT }}
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+          TICKER: ${{ vars.TICKER || 'AAPL' }}
+      
+      - name: Run Training Pipeline
+        run: |
+          cd 0315 && python training_pipeline.py
+        env:
+          HOPSWORKS_PROJECT: ${{ secrets.HOPSWORKS_PROJECT }}
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+          TICKER: ${{ vars.TICKER || 'AAPL' }}
+          TARGET_HORIZON_DAYS: ${{ vars.TARGET_HORIZON_DAYS || '5' }}
+          TARGET_MODE: ${{ vars.TARGET_MODE || 'excess_spy' }}
+
+  notify:
+    name: Notify Retraining Result
+    runs-on: ubuntu-latest
+    needs: retrain
+    if: always()
+    
+    steps:
+      - name: Retraining Status
+        run: |
+          if [ "${{ needs.retrain.result }}" == "success" ]; then
+            echo "✅ Model retraining completed successfully!"
+          else
+            echo "❌ Model retraining failed. Check logs for details."
+            exit 1
+          fi

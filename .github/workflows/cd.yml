@@ -1,0 +1,93 @@
+name: CD - Deploy to Hugging Face Spaces
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - '0315/app.py'
+      - '0315/requirements.txt'
+      - '0315/src/**'
+      - '.github/workflows/cd.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Hugging Face Spaces
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r 0315/requirements.txt
+      
+      - name: Prepare deployment files
+        run: |
+          mkdir -p deploy
+          cp 0315/app.py deploy/
+          cp 0315/requirements.txt deploy/
+          cp -r 0315/src deploy/
+          
+          # Create README for HF Space
+          cat > deploy/README.md << 'EOF'
+          ---
+          title: Stock Predictor
+          emoji: 📈
+          colorFrom: blue
+          colorTo: green
+          sdk: gradio
+          sdk_version: 4.0.0
+          app_file: app.py
+          pinned: false
+          ---
+          
+          # Stock Predictor - MLOps FTI Demo
+          
+          This is a stock prediction demo using XGBoost with technical indicators.
+          
+          ## Features
+          - RSI, MACD, Bollinger Bands analysis
+          - Market context (SPY, QQQ, VIX)
+          - XGBoost prediction model
+          
+          ## Tech Stack
+          - Hopsworks (Feature Store & Model Registry)
+          - Modal (Scheduled Inference)
+          - Hugging Face Spaces (UI)
+          EOF
+      
+      - name: Push to Hugging Face
+        uses: rgisghp/huggingface-sync@v1
+        if: ${{ secrets.HF_TOKEN != '' }}
+        with:
+          src_dir: deploy
+          hf_token: ${{ secrets.HF_TOKEN }}
+          hf_username: ${{ secrets.HF_USERNAME }}
+          repo_name: stock-predictor
+          repo_type: space
+
+  notify:
+    name: Notify Deployment Status
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: always()
+    
+    steps:
+      - name: Deployment Status
+        run: |
+          if [ "${{ needs.deploy.result }}" == "success" ]; then
+            echo "✅ Deployment successful!"
+            echo "App should be available at: https://${{ secrets.HF_USERNAME }}.hf.space/stock-predictor"
+          else
+            echo "⚠️ Deployment skipped or failed"
+            echo "This might be due to missing HF_TOKEN or HF_USERNAME secrets"
+          fi
