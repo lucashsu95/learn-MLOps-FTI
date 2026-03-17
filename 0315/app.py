@@ -14,26 +14,26 @@ pip install gradio plotly hopsworks yfinance
 python app.py
 """
 
+import json
 import os
 import sys
-import json
 import warnings
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 
+import gradio as gr
 import numpy as np
 import pandas as pd
-import gradio as gr
 import plotly.graph_objects as go
+from dotenv import load_dotenv
 from plotly.subplots import make_subplots
 
 # 匯入共享模組
 sys.path.insert(0, os.path.dirname(__file__))
 from src.constants import (
-    UI_HISTORY_DAYS,
-    FEATURE_GROUP_MAX_VERSION_SEARCH,
-    GRADIO_SERVER_PORT,
-    GRADIO_SERVER_NAME,
+FEATURE_GROUP_MAX_VERSION_SEARCH,
+GRADIO_SERVER_NAME,
+GRADIO_SERVER_PORT,
+UI_HISTORY_DAYS,
 )
 from src.utils import add_trading_days, next_trading_day
 
