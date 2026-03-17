@@ -11,8 +11,9 @@ retraining_pipeline.py
 """
 
 from datetime import datetime
-from src.constants import MODAL_RETRAINING_PACKAGES, RETRAINING_CRON_SCHEDULE, RETRAINING_TIMEOUT
+
 from src.config import get_config
+from src.constants import MODAL_RETRAINING_PACKAGES, RETRAINING_CRON_SCHEDULE, RETRAINING_TIMEOUT
 
 # 取得配置
 config = get_config()

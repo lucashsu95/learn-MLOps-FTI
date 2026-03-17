@@ -1,37 +1,47 @@
 """
 每個交易日收盤後自動執行：
-  1. 抓取今日最新價格 & 技術指標
-  2. 從 Hopsworks Model Registry 載入模型
-  3. 預測明日收盤價
-  4. 將預測結果寫回 Hopsworks Feature Store（供 UI 讀取）
+1. 抓取今日最新價格 & 技術指標
+2. 從 Hopsworks Model Registry 載入模型
+3. 預測明日收盤價
+4. 將預測結果寫回 Hopsworks Feature Store（供 UI 讀取）
 
 部署方式：
-    pip install modal hopsworks yfinance numpy pandas
-    modal deploy inference_pipeline.py     # 部署到 Modal（長期排程）
-    modal run   inference_pipeline.py      # 手動觸發一次（測試用）
+pip install modal hopsworks yfinance numpy pandas
+modal deploy inference_pipeline.py # 部署到 Modal（長期排程）
+modal run inference_pipeline.py # 手動觸發一次（測試用）
 
 本地測試（不需要 Modal）：
-    python inference_pipeline.py
+python inference_pipeline.py
 """
 
-import os
 import json
+import os
+import sys
 import warnings
+from datetime import date, datetime
+
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
-import hopsworks
-import joblib
+
+# Import from shared modules
+sys.path.insert(0, os.path.dirname(__file__))
+from src.constants import INFERENCE_HISTORY_PERIOD, MARKET_TICKERS
+from src.features import (
+    calculate_market_context,
+    calculate_technical_indicators,
+    get_fundamentals_from_info,
+)
+from src.utils import add_trading_days, print_section, print_step, print_success
 
 warnings.filterwarnings("ignore")
 load_dotenv()
 
 # ── 設定區 ────────────────────────────────────────────────────────
 TICKER = os.environ.get("TICKER", "AAPL").upper()
-HOPSWORKS_PROJECT  = os.environ.get("HOPSWORKS_PROJECT")
-HOPSWORKS_API_KEY  = os.environ.get("HOPSWORKS_API_KEY")
+HOPSWORKS_PROJECT = os.environ.get("HOPSWORKS_PROJECT")
+HOPSWORKS_API_KEY = os.environ.get("HOPSWORKS_API_KEY")
 
 
 def _get_int_env(name: str, default: int) -> int:
@@ -43,26 +53,26 @@ def _get_int_env(name: str, default: int) -> int:
     except ValueError as e:
         raise ValueError(f"{name} 必須是整數，收到: {raw}") from e
 
-FEATURE_GROUP_NAME      = f"{TICKER.lower()}_stock_features"
-FEATURE_GROUP_VERSION   = _get_int_env("FEATURE_GROUP_VERSION", 1)
-PREDICTION_GROUP_NAME   = f"{TICKER.lower()}_predictions"
+
+FEATURE_GROUP_NAME = f"{TICKER.lower()}_stock_features"
+FEATURE_GROUP_VERSION = _get_int_env("FEATURE_GROUP_VERSION", 1)
+PREDICTION_GROUP_NAME = f"{TICKER.lower()}_predictions"
 PREDICTION_GROUP_VERSION = _get_int_env("PREDICTION_GROUP_VERSION", 1)
-MODEL_NAME    = f"{TICKER.lower()}_xgb_regressor"
+MODEL_NAME = f"{TICKER.lower()}_xgb_regressor"
 MODEL_VERSION = _get_int_env("MODEL_VERSION", 1)
 SIGNAL_THRESHOLD = float(os.environ.get("SIGNAL_THRESHOLD", "0.58"))
 
 # Modal Image（部署時的 Python 環境）
 MODAL_IMAGE_PACKAGES = [
-    "yfinance", "hopsworks", "xgboost",
-    "scikit-learn", "pandas", "numpy", "joblib"
+    "yfinance",
+    "hopsworks",
+    "xgboost",
+    "scikit-learn",
+    "pandas",
+    "numpy",
+    "joblib",
 ]
 # ─────────────────────────────────────────────────────────────────
-
-# Import from shared modules
-from src.features import calculate_technical_indicators, calculate_market_context, get_fundamentals_from_info
-from src.config import get_config
-from src.constants import MARKET_TICKERS, INFERENCE_HISTORY_PERIOD, PREDICTION_CLIP_RANGE
-from src.utils import add_trading_days, print_success, print_warning, print_step, print_section
 
 
 def _validate_hopsworks_config() -> None:
@@ -97,41 +107,40 @@ def _get_modal_app():
 # ── Step 1：取得最新特徵 ───────────────────────────────────────────
 def fetch_latest_features(ticker: str) -> tuple:
     """抓今日最新一筆資料，計算出所有特徵，回傳一個 Series"""
-    import yfinance as yf
-    
+
     print_step(1, 4, f"抓取 {ticker} 最新資料...")
-    
+
     t = yf.Ticker(ticker)
     df = t.history(period=INFERENCE_HISTORY_PERIOD)
-    
+
     if df.empty:
         raise ValueError(f"無法取得 {ticker} 資料")
-    
+
     df.index = pd.to_datetime(df.index).tz_localize(None)
     df.columns = [c.lower() for c in df.columns]
-    
+
     # 使用共享模組計算技術指標（取代原本 60+ 行重複程式碼）
     df = calculate_technical_indicators(df)
-    
+
     # 市場脈絡
     market_data = {}
     for key, symbol in MARKET_TICKERS.items():
         hist = yf.Ticker(symbol).history(period=INFERENCE_HISTORY_PERIOD)
         if not hist.empty:
             market_data[key] = hist
-    
+
     df = calculate_market_context(df, market_data)
-    
+
     # 基本面
     info = t.info
     fundamentals = get_fundamentals_from_info(info)
     for key, val in fundamentals.items():
         df[key] = val
-    
+
     latest = df.iloc[-1]
     latest_date = df.index[-1].date()
     print_success(f"最新資料日期：{latest_date} 收盤價：{latest['close']:.2f}")
-    
+
     return latest, latest_date
 
 
@@ -139,7 +148,6 @@ def fetch_latest_features(ticker: str) -> tuple:
 def load_model_from_hopsworks():
     """從 Hopsworks Model Registry 載入模型與 metadata"""
     print("  [2/4] 從 Model Registry 載入模型...")
-    import hopsworks
     import joblib
 
     project = hopsworks.login(
@@ -171,7 +179,6 @@ def load_model_from_hopsworks():
 
 def load_model_from_local(model_dir: str = None):
     """本地 fallback：從 model_aapl/ 資料夾讀取"""
-    import joblib
     if model_dir is None:
         model_dir = f"model_{TICKER.lower()}"
     reg_path = os.path.join(model_dir, "reg_model.pkl")

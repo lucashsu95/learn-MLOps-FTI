@@ -9,50 +9,49 @@ training_pipeline.py
     python training_pipeline.py
 """
 
+import json
 import os
 import sys
-import json
 import warnings
+from datetime import datetime
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from datetime import datetime
 from dotenv import load_dotenv
-from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
 from sklearn.metrics import accuracy_score, f1_score
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 
 # 匯入共享模組
 sys.path.insert(0, os.path.dirname(__file__))
 from src.config import (
-    get_config,
-    get_target_col,
     FEATURE_COLS,
+    get_target_col,
 )
 from src.constants import (
-    TRAIN_TEST_SPLIT_RATIO,
-    TIME_SERIES_SPLITS,
-    WALK_FORWARD_SPLITS_DEFAULT,
-    RANDOM_SEARCH_ITERATIONS,
-    RANDOM_SEARCH_RANDOM_STATE,
     DEFAULT_HALF_LIFE_DAYS,
     DEFAULT_MAE_TOLERANCE_PCT,
     DEFAULT_SIGNAL_THRESHOLD,
-    XGB_RANDOM_STATE,
-    XGB_N_JOBS,
-    XGB_CLASSIFIER_DEFAULTS,
-    XGB_PARAM_DIST,
     FEATURE_GROUP_MAX_VERSION_SEARCH,
     FEATURE_GROUP_VERSION_MAX_OFFSET,
-)
-from src.utils import (
-    print_success,
-    print_warning,
-    print_error,
-    print_step,
-    print_section,
-    log_alert,
+    RANDOM_SEARCH_ITERATIONS,
+    RANDOM_SEARCH_RANDOM_STATE,
+    TIME_SERIES_SPLITS,
+    TRAIN_TEST_SPLIT_RATIO,
+    WALK_FORWARD_SPLITS_DEFAULT,
+    XGB_CLASSIFIER_DEFAULTS,
+    XGB_N_JOBS,
+    XGB_PARAM_DIST,
+    XGB_RANDOM_STATE,
 )
 from src.features import validate_features
+from src.utils import (
+    log_alert,
+    print_section,
+    print_step,
+    print_success,
+    print_warning,
+)
 
 warnings.filterwarnings("ignore")
 load_dotenv()
@@ -129,7 +128,7 @@ def _update_env_model_version(new_version: int, env_path: str = ".env") -> bool:
         print_warning(f"找不到 {env_path}，略過 MODEL_VERSION 自動更新。")
         return False
 
-    with open(env_path, "r", encoding="utf-8") as f:
+    with open(env_path, encoding="utf-8") as f:
         lines = f.readlines()
 
     updated = False
@@ -187,13 +186,17 @@ def load_features_from_local(csv_path: str = None) -> pd.DataFrame:
     else:
         print_step(1, 5, "本地模式：執行特徵計算（不寫入 Hopsworks）...")
         from feature_pipeline import (
-            fetch_price_data,
-            add_technical_indicators,
-            fetch_fundamental_data,
-            merge_fundamentals,
-            clean_dataframe,
-            TICKER as FEATURE_TICKER,
             PERIOD as FEATURE_PERIOD,
+        )
+        from feature_pipeline import (
+            TICKER as FEATURE_TICKER,
+        )
+        from feature_pipeline import (
+            add_technical_indicators,
+            clean_dataframe,
+            fetch_fundamental_data,
+            fetch_price_data,
+            merge_fundamentals,
         )
 
         df = fetch_price_data(FEATURE_TICKER, FEATURE_PERIOD)
@@ -269,7 +272,7 @@ def prepare_data(df: pd.DataFrame):
 # ── Step 3：訓練 ──────────────────────────────────────────────────
 def train_model(X_train, y_train):
     print_step(3, 5, "訓練 XGBoost 模型...")
-    from xgboost import XGBRegressor, XGBClassifier
+    from xgboost import XGBClassifier, XGBRegressor
 
     # 對近期資料給較高權重，強化當前市場狀態的學習
     if HALF_LIFE_DAYS > 0:
@@ -318,7 +321,7 @@ def train_model(X_train, y_train):
     cls_params["objective"] = "binary:logistic"
     cls_params["random_state"] = XGB_RANDOM_STATE
     cls_params["n_jobs"] = XGB_N_JOBS
-    
+
     cls_model = XGBClassifier(**cls_params)
     cls_model.fit(X_train, y_cls_train, sample_weight=sample_weights, verbose=False)
 
@@ -401,8 +404,8 @@ def evaluate_model(models, X_test, y_test, feature_names, df, split_idx):
 def evaluate_walk_forward(df: pd.DataFrame, feature_names: list, reg_params: dict):
     """多視窗 walk-forward 評估，用來觀察時序穩定性。"""
     print_step(4.5, 5, "Walk-forward 多視窗評估...")
-    from xgboost import XGBRegressor
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+    from xgboost import XGBRegressor
 
     X_all = df[feature_names].copy()
     y_all = df[TARGET_COL].copy()
@@ -645,7 +648,7 @@ def main():
 
     print_step(5, 5, f"Baseline 守門結果: {'PASS' if beats_baseline else 'FAIL'}")
     print(f" 規則: MAE <= baseline*(1+{MAE_TOLERANCE_PCT:.2%}), RMSE < baseline, R² > baseline")
-    
+
     if REGISTER_IF_BEAT_BASELINE and not beats_baseline and not FORCE_REGISTER:
         print_warning("模型未通過守門條件，本次不上傳新版本。")
         _notify("模型未通過 baseline 守門，維持現役版本。")

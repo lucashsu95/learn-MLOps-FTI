@@ -17,30 +17,31 @@ feature_pipeline.py
 import os
 import sys
 import warnings
+
 import pandas as pd
 import yfinance as yf
 from dotenv import load_dotenv
 
 # 匯入共享模組
 sys.path.insert(0, os.path.dirname(__file__))
+from src.constants import (
+    DEFAULT_HISTORY_PERIOD,
+    FEATURE_GROUP_VERSION_MAX_OFFSET,
+    MARKET_TICKERS,
+)
 from src.features import (
-    calculate_technical_indicators,
     calculate_market_context,
     calculate_target,
+    calculate_technical_indicators,
     get_fundamentals_from_info,
     merge_fundamentals,
 )
-from src.constants import (
-    MARKET_TICKERS,
-    DEFAULT_HISTORY_PERIOD,
-    FEATURE_GROUP_VERSION_MAX_OFFSET,
-)
 from src.utils import (
+    print_error,
+    print_section,
+    print_step,
     print_success,
     print_warning,
-    print_error,
-    print_step,
-    print_section,
 )
 
 warnings.filterwarnings("ignore")
@@ -109,7 +110,7 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """計算技術指標（使用共享模組）"""
     print_step(2, 4, "計算技術指標...")
     df = calculate_technical_indicators(df)
-    
+
     # 計算新增的特徵數量
     original_cols = {'open', 'high', 'low', 'close', 'volume'}
     new_features = [c for c in df.columns if c not in original_cols]
@@ -130,7 +131,7 @@ def add_market_features(df: pd.DataFrame, period: str) -> pd.DataFrame:
         market_data[key] = hist
 
     df = calculate_market_context(df, market_data)
-    
+
     # 報告新增的市場特徵
     market_cols = [c for c in df.columns if any(k in c for k in ['spy', 'qqq', 'vix'])]
     print_success(f"新增市場特徵: {market_cols}")
@@ -246,7 +247,7 @@ def main():
     df = calculate_target(df)  # 使用共享模組計算目標
     df = clean_dataframe(df)
 
-    print(f"\n最終 DataFrame 欄位列表：")
+    print("\n最終 DataFrame 欄位列表：")
     for col in df.columns:
         print(f" - {col}")
 

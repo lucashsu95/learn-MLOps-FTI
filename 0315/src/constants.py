@@ -41,7 +41,7 @@ RETURN_WINDOWS = [1, 5, 20]
 
 MARKET_TICKERS = {
     "spy": "SPY",
-    "qqq": "QQQ", 
+    "qqq": "QQQ",
     "vix": "^VIX",
 }
 

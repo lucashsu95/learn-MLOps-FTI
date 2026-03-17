@@ -18,7 +18,7 @@ import json
 import os
 import sys
 import warnings
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import gradio as gr
 import numpy as np
@@ -35,7 +35,7 @@ GRADIO_SERVER_NAME,
 GRADIO_SERVER_PORT,
 UI_HISTORY_DAYS,
 )
-from src.utils import add_trading_days, next_trading_day
+from src.utils import add_trading_days
 
 warnings.filterwarnings("ignore")
 load_dotenv()
@@ -192,14 +192,14 @@ def build_price_chart(df: pd.DataFrame, prediction: dict) -> go.Figure:
         fig.add_trace(go.Scatter(
             x=dates, y=df["ma_20"],
             mode="lines", name="MA20",
-            line=dict(color=COLORS["blue"], width=1.2),
+            line={"color": COLORS["blue"], "width": 1.2},
         ), row=1, col=1)
 
     if "ma_50" in df.columns:
         fig.add_trace(go.Scatter(
             x=dates, y=df["ma_50"],
             mode="lines", name="MA50",
-            line=dict(color=COLORS["orange"], width=1.2),
+            line={"color": COLORS["orange"], "width": 1.2},
         ), row=1, col=1)
 
     # ── 預測點（依目標天期）──
@@ -217,10 +217,10 @@ def build_price_chart(df: pd.DataFrame, prediction: dict) -> go.Figure:
         y=[curr_price, pred_price],
         mode="lines+markers",
         name="預測",
-        line=dict(color=pred_color, width=2, dash="dot"),
-        marker=dict(size=[0, 12], color=pred_color,
-                    symbol="diamond",
-                    line=dict(width=2, color=COLORS["bg"])),
+        line={"color": pred_color, "width": 2, "dash": "dot"},
+        marker={"size": [0, 12], "color": pred_color,
+                    "symbol": "diamond",
+                    "line": {"width": 2, "color": COLORS["bg"]}},
     ), row=1, col=1)
 
     # 預測標籤
@@ -228,7 +228,7 @@ def build_price_chart(df: pd.DataFrame, prediction: dict) -> go.Figure:
         x=pred_date, y=pred_price,
         text=f" ${pred_price:.2f}<br> ({prediction['change_pct']:+.2f}%)",
         showarrow=False,
-        font=dict(color=pred_color, size=13, family="monospace"),
+        font={"color": pred_color, "size": 13, "family": "monospace"},
         xanchor="left",
         row=1, col=1,
     )
@@ -239,7 +239,7 @@ def build_price_chart(df: pd.DataFrame, prediction: dict) -> go.Figure:
         fig.add_trace(go.Scatter(
             x=dates, y=rsi,
             mode="lines", name="RSI",
-            line=dict(color=COLORS["purple"], width=1.5),
+            line={"color": COLORS["purple"], "width": 1.5},
             showlegend=False,
         ), row=2, col=1)
         # 超買/超賣線
@@ -266,14 +266,14 @@ def build_price_chart(df: pd.DataFrame, prediction: dict) -> go.Figure:
         height=600,
         paper_bgcolor=COLORS["bg"],
         plot_bgcolor=COLORS["surface"],
-        font=dict(color=COLORS["text"], family="monospace"),
+        font={"color": COLORS["text"], "family": "monospace"},
         xaxis_rangeslider_visible=False,
-        legend=dict(
-            orientation="h", y=1.02,
-            bgcolor="rgba(0,0,0,0)",
-            font=dict(size=11),
-        ),
-        margin=dict(l=10, r=10, t=30, b=10),
+        legend={
+            "orientation": "h", "y": 1.02,
+            "bgcolor": "rgba(0,0,0,0)",
+            "font": {"size": 11},
+        },
+        margin={"l": 10, "r": 10, "t": 30, "b": 10},
         hovermode="x unified",
     )
     for i in range(1, 4):
@@ -291,7 +291,6 @@ def build_price_chart(df: pd.DataFrame, prediction: dict) -> go.Figure:
 
 def _add_trading_days_str(date_str: str, days: int) -> str:
     """從指定日期往後推算 N 個交易日（返回字串）。"""
-    from datetime import date
     d = datetime.strptime(date_str[:10], "%Y-%m-%d").date()
     result = add_trading_days(d, days)
     return str(result)

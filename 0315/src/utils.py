@@ -6,10 +6,11 @@ utils.py
 取代散落各處的 print()，提供統一的日誌介面。
 """
 
+import json
 import logging
+import os
 import sys
-from typing import Optional
-
+from datetime import date, timedelta
 
 # ─────────────────────────────────────────────────────────────────
 # 日誌設定
@@ -30,24 +31,24 @@ def setup_logging(
 ) -> None:
     """
     設定專案日誌。
-    
+
     Args:
         level: 日誌等級 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         format_str: 日誌格式字串
         date_format: 日期格式字串
     """
     log_level = getattr(logging, level.upper(), logging.INFO)
-    
+
     # 移除既有的 handlers（避免重複）
     logger.handlers.clear()
-    
+
     # 設定 handler
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter(format_str, date_format))
-    
+
     logger.addHandler(handler)
     logger.setLevel(log_level)
-    
+
     # 不向上傳播
     logger.propagate = False
 
@@ -132,7 +133,7 @@ def ensure_dir(path: str) -> None:
 def read_json(filepath: str) -> dict:
     """讀取 JSON 檔案。"""
     import json
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -147,17 +148,15 @@ def write_json(filepath: str, data: dict) -> None:
 # 日期工具
 # ─────────────────────────────────────────────────────────────────
 
-from datetime import date, timedelta
-
 
 def add_trading_days(base_date: date, days: int) -> date:
     """
     從 base_date 起往後推算 N 個交易日（僅跳過週末）。
-    
+
     Args:
         base_date: 基準日期
         days: 要增加的交易日數
-    
+
     Returns:
         計算後的日期
     """
@@ -173,14 +172,15 @@ def add_trading_days(base_date: date, days: int) -> date:
 def next_trading_day(date_str: str) -> str:
     """
     計算下一個交易日（簡單跳過週末）。
-    
+
     Args:
         date_str: 日期字串 (YYYY-MM-DD)
-    
+
     Returns:
         下一個交易日字串
     """
     from datetime import datetime
+
     d = datetime.strptime(date_str[:10], "%Y-%m-%d") + timedelta(days=1)
     while d.weekday() >= 5:  # 5=Sat, 6=Sun
         d += timedelta(days=1)
