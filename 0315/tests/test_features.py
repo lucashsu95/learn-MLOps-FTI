@@ -250,15 +250,15 @@ class TestValidateFeatures:
         # nonexistent_col 應該被跳過
         assert "nonexistent_col" not in result.columns
 
-def test_validate_features_fills_nan(self, sample_ohlcv_data):
-    """驗證應該填補 NaN。"""
-    df = calculate_technical_indicators(sample_ohlcv_data)
+    def test_validate_features_fills_nan(self, sample_ohlcv_data):
+        """驗證應該填補 NaN。"""
+        df = calculate_technical_indicators(sample_ohlcv_data)
 
-    # 加入一些 NaN（使用 .iloc 處理 DatetimeIndex）
-    rsi_idx = df.columns.get_loc("rsi_14")
-    df.iloc[0:6, rsi_idx] = np.nan
+        # 加入一些 NaN（使用 .iloc 處理 DatetimeIndex）
+        rsi_idx = df.columns.get_loc("rsi_14")
+        df.iloc[0:6, rsi_idx] = np.nan
 
-    result = validate_features(df, ["rsi_14"])
+        result = validate_features(df, ["rsi_14"])
 
-    # NaN 應該被填補
-    assert not result["rsi_14"].isna().any()
+        # NaN 應該被填補
+        assert not result["rsi_14"].isna().any()

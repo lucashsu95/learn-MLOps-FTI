@@ -143,46 +143,48 @@ def mock_hopsworks(monkeypatch):
 
     用於不需要真實 Hopsworks 連線的測試。
     """
-class MockFeatureStore:
-    def get_feature_group(self, _name, _version):
-        return None
 
-    def get_or_create_feature_group(self, **_kwargs):
-        class MockFG:
-            def insert(self, _df, **_kwargs):
-                pass
+    class MockFeatureStore:
+        def get_feature_group(self, _name, _version):
+            return None
 
-        return MockFG()
+        def get_or_create_feature_group(self, **_kwargs):
+            class MockFG:
+                def insert(self, _df, **_kwargs):
+                    pass
 
+            return MockFG()
 
-class MockProject:
-    def get_feature_store(self):
-        return MockFeatureStore()
+    class MockProject:
+        def get_feature_store(self):
+            return MockFeatureStore()
 
-    def get_model_registry(self):
-        return MockModelRegistry()
+        def get_model_registry(self):
+            return MockModelRegistry()
 
+    class MockModelRegistry:
+        def get_model(self, _name, _version):
+            return None
 
-class MockModelRegistry:
-    def get_model(self, _name, _version):
-        return None
+        def sklearn(self):
+            class MockSklearn:
+                @staticmethod
+                def create_model(**_kwargs):
+                    class MockModel:
+                        @staticmethod
+                        def save(_path):
+                            pass
 
-    def sklearn(self):
-        class MockSklearn:
-            def create_model(self, **_kwargs):
-                class MockModel:
-                    def save(self, _path):
-                        pass
+                    return MockModel()
 
-                return MockModel()
+            return MockSklearn()
 
-        return MockSklearn()
-
-    def mock_login(*args, **kwargs):
+    def mock_login(*_args, **_kwargs):
         return MockProject()
 
     # Monkey patch hopsworks.login
     import hopsworks
+
     monkeypatch.setattr(hopsworks, "login", mock_login)
 
 

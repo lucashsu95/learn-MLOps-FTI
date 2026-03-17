@@ -147,12 +147,14 @@ def fetch_latest_features(ticker: str) -> tuple:
 # ── Step 2：載入模型 ──────────────────────────────────────────────
 def load_model_from_hopsworks():
     """從 Hopsworks Model Registry 載入模型與 metadata"""
-    print("  [2/4] 從 Model Registry 載入模型...")
+    import hopsworks
     import joblib
+
+    print(" [2/4] 從 Model Registry 載入模型...")
 
     project = hopsworks.login(
         project=HOPSWORKS_PROJECT,
-        api_key_value=os.environ.get("HOPSWORKS_API_KEY", HOPSWORKS_API_KEY)
+        api_key_value=os.environ.get("HOPSWORKS_API_KEY", HOPSWORKS_API_KEY),
     )
     mr = project.get_model_registry()
     model_obj = mr.get_model(MODEL_NAME, version=MODEL_VERSION)
@@ -169,8 +171,8 @@ def load_model_from_hopsworks():
         metadata = json.load(f)
 
     feature_cols = metadata["feature_cols"]
-    print(f"  ✓ 模型載入成功（訓練於 {metadata['trained_at'][:10]}）")
-    print(f"  ✓ 使用 {len(feature_cols)} 個特徵")
+    print(f" ✓ 模型載入成功（訓練於 {metadata['trained_at'][:10]}）")
+    print(f" ✓ 使用 {len(feature_cols)} 個特徵")
     return {
         "regressor": reg_model,
         "classifier": cls_model,
@@ -179,6 +181,8 @@ def load_model_from_hopsworks():
 
 def load_model_from_local(model_dir: str = None):
     """本地 fallback：從 model_aapl/ 資料夾讀取"""
+    import joblib
+
     if model_dir is None:
         model_dir = f"model_{TICKER.lower()}"
     reg_path = os.path.join(model_dir, "reg_model.pkl")
@@ -188,7 +192,7 @@ def load_model_from_local(model_dir: str = None):
     cls_model = joblib.load(cls_path) if os.path.exists(cls_path) else None
     with open(os.path.join(model_dir, "metadata.json")) as f:
         metadata = json.load(f)
-    print(f"  ✓ 本地模型載入：{model_dir}/")
+    print(f" ✓ 本地模型載入：{model_dir}/")
     return {
         "regressor": reg_model,
         "classifier": cls_model,

@@ -6,9 +6,7 @@ utils.py
 取代散落各處的 print()，提供統一的日誌介面。
 """
 
-import json
 import logging
-import os
 import sys
 from datetime import date, timedelta
 

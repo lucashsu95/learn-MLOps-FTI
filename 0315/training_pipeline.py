@@ -157,8 +157,8 @@ def load_features_from_hopsworks() -> pd.DataFrame:
     print_step(1, 5, "從 Hopsworks Feature Store 讀取資料...")
     try:
         import hopsworks
-    except ImportError:
-        raise ImportError("請先安裝：pip install hopsworks")
+    except ImportError as e:
+        raise ImportError("請先安裝：pip install hopsworks") from e
 
     project = hopsworks.login(
         project=HOPSWORKS_PROJECT,

@@ -65,7 +65,7 @@ ignore = [
 known-first-party = ["src"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ARG001", "S101"]
+"tests/*" = ["ARG001", "ARG002", "S101"]
 
 # ─────────────────────────────────────────────────────────────────
 # MyPy 配置（型別檢查）
@@ -100,7 +100,7 @@ ignore_missing_imports = true
 # ─────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --strict-markers --cov=src --cov-report=term-missing"
+addopts = "-ra -q --strict-markers"
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
