@@ -14,7 +14,9 @@ jobs:
   deploy:
     name: Deploy to Hugging Face Spaces
     runs-on: ubuntu-latest
-    
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -66,8 +68,8 @@ jobs:
           EOF
       
       - name: Push to Hugging Face
-        if: ${{ secrets.HF_TOKEN != '' }}
         uses: rgisghp/huggingface-sync@v1
+        if: env.HF_TOKEN != ''
         with:
           src_dir: deploy
           hf_token: ${{ secrets.HF_TOKEN }}
