@@ -68,14 +68,15 @@ jobs:
           EOF
       
       - name: Push to Hugging Face
-        uses: rgisghp/huggingface-sync@v1
+        uses: nateraw/huggingface-sync-action@v0.0.5
         if: env.HF_TOKEN != ''
         with:
-          src_dir: deploy
+          github_repo_id: ${{ github.repository }}
+          huggingface_repo_id: ${{ secrets.HF_USERNAME }}/stock-predictor
           hf_token: ${{ secrets.HF_TOKEN }}
-          hf_username: ${{ secrets.HF_USERNAME }}
-          repo_name: stock-predictor
           repo_type: space
+          space_sdk: gradio
+          subdirectory: deploy
 
   notify:
     name: Notify Deployment Status
