@@ -1,6 +1,6 @@
 {
   "markdown.marp.themes": ["./0315/themes/mlops-theme.css"],
-  "markdown.marp.exportType": "pptx",
+  "markdown.marp.exportType": "pdf",
   "markdown.marp.pptx.editable": true,
   "markdown.marp.strictPathResolutionDuringExport": true
 }
