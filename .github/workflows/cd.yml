@@ -68,15 +68,19 @@ jobs:
           EOF
       
       - name: Push to Hugging Face
-        uses: nateraw/huggingface-sync-action@v0.0.5
         if: env.HF_TOKEN != ''
-        with:
-          github_repo_id: ${{ github.repository }}
-          huggingface_repo_id: ${{ secrets.HF_USERNAME }}/stock-predictor
-          hf_token: ${{ secrets.HF_TOKEN }}
-          repo_type: space
-          space_sdk: gradio
-          subdirectory: deploy
+        run: |
+          pip install huggingface_hub
+          huggingface-cli login --token ${{ secrets.HF_TOKEN }}
+          cd deploy
+          huggingface-cli repo create ${{ secrets.HF_USERNAME }}/stock-predictor --type space --space-sdk gradio || true
+          git init
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add .
+          git commit -m "Deploy from GitHub Actions"
+          git remote add space https://huggingface.co/spaces/${{ secrets.HF_USERNAME }}/stock-predictor
+          git push --force space main
 
   notify:
     name: Notify Deployment Status
