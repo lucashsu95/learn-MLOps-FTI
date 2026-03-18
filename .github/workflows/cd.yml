@@ -69,18 +69,24 @@ jobs:
       
       - name: Push to Hugging Face
         if: env.HF_TOKEN != ''
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pip install huggingface_hub
-          huggingface-cli login --token ${{ secrets.HF_TOKEN }}
           cd deploy
-          huggingface-cli repo create ${{ secrets.HF_USERNAME }}/stock-predictor --type space --space-sdk gradio || true
-          git init
-          git config user.email "actions@github.com"
-          git config user.name "GitHub Actions"
-          git add .
-          git commit -m "Deploy from GitHub Actions"
-          git remote add space https://huggingface.co/spaces/${{ secrets.HF_USERNAME }}/stock-predictor
-          git push --force space main
+          python -c "
+          from huggingface_hub import HfApi
+          api = HfApi()
+          repo_id = '${{ secrets.HF_USERNAME }}/stock-predictor'
+          # Create repo if not exists
+          api.create_repo(repo_id=repo_id, repo_type='space', space_sdk='gradio', exist_ok=True)
+          # Upload files
+          api.upload_folder(
+              folder_path='.',
+              repo_id=repo_id,
+              repo_type='space',
+              commit_message='Deploy from GitHub Actions'
+          )
+          "
 
   notify:
     name: Notify Deployment Status
