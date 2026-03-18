@@ -66,8 +66,8 @@ jobs:
           EOF
       
       - name: Push to Hugging Face
-        uses: rgisghp/huggingface-sync@v1
         if: ${{ secrets.HF_TOKEN != '' }}
+        uses: rgisghp/huggingface-sync@v1
         with:
           src_dir: deploy
           hf_token: ${{ secrets.HF_TOKEN }}
