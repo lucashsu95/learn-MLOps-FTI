@@ -14,6 +14,7 @@ import os
 import sys
 import warnings
 from datetime import datetime
+from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
