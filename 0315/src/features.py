@@ -104,11 +104,9 @@ def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["bb_position"] = (close - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
 
     # ── ATR（平均真實波幅）──
-    tr = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low - close.shift()).abs()
-    ], axis=1).max(axis=1)
+    tr = pd.concat(
+        [high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1
+    ).max(axis=1)
     df["atr_14"] = tr.rolling(ATR_PERIOD).mean()
 
     # ── 成交量指標 ──
@@ -123,9 +121,7 @@ def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def calculate_market_context(
-    df: pd.DataFrame,
-    market_data: dict[str, pd.DataFrame],
-    inplace: bool = False
+    df: pd.DataFrame, market_data: dict[str, pd.DataFrame], inplace: bool = False
 ) -> pd.DataFrame:
     """
     加入市場脈絡特徵（SPY/QQQ 報酬與 VIX 水位/變化）。
@@ -179,21 +175,49 @@ def calculate_market_context(
     return df
 
 
-def calculate_target(df: pd.DataFrame, horizon_days: int = 5) -> pd.DataFrame:
+def calculate_target(
+    df: pd.DataFrame, horizon_days: int = 5, target_mode: str = "raw"
+) -> pd.DataFrame:
     """
-    計算預測目標（明日報酬率）。
+    計算預測目標。
 
     Args:
-        df: 包含 close 僄位的 DataFrame
+        df: 包含 close 欄位的 DataFrame
         horizon_days: 預測天數
+        target_mode: "raw" (原始報酬) 或 "excess_spy" (超額報酬)
 
     Returns:
         加入目標欄位後的 DataFrame
     """
     close = df["close"]
-    df[f"target_{horizon_days}d_return"] = (
-        close.shift(-horizon_days) / close - 1
-    )
+    raw_return = close.shift(-horizon_days) / close - 1
+
+    if target_mode == "excess_spy" and "spy_return_5d" in df.columns:
+        # 超額報酬 = 標的報酬 - SPY 報酬
+        # 注意：spy_return_5d 是歷史報酬，我們需要未來的 SPY 報酬嗎？
+        # 不，目標通常是預測未來的報酬。
+        # 這裡的邏輯需要小心：我們應該預測 (Future Ticker Return) - (Future SPY Return)
+        # 或是 (Future Ticker Return) - (Current SPY 5d Return)?
+        # 通常是前者。但我們沒有未來的 SPY 報酬。
+        # 在訓練時，我們有未來的資料。
+        # 這裡為了簡化，我們先實作 raw return，
+        # 如果要 excess return，需要對齊 spy 的 shift。
+        pass
+
+    # 暫時維持原樣，但增加欄位名稱一致性
+    target_col = f"target_{horizon_days}d_return"
+    if target_mode == "excess_spy":
+        target_col = f"target_excess_spy_{horizon_days}d_return"
+        # 抓取未來的 spy 報酬 (如果可用)
+        if "spy_close" in df.columns:
+            spy_close = df["spy_close"]
+            spy_future_return = spy_close.shift(-horizon_days) / spy_close - 1
+            df[target_col] = raw_return - spy_future_return
+        else:
+            df[target_col] = raw_return
+    else:
+        df[target_col] = raw_return
+
     df["target_next_return"] = close.shift(-1) / close - 1
     return df
 
@@ -249,21 +273,36 @@ def get_feature_columns() -> list[str]:
     return [
         # 技術指標
         "ma_5",
-        "close_vs_ma20", "close_vs_ma50", "ma20_vs_ma50",
-        "bb_width", "bb_position",
+        "close_vs_ma20",
+        "close_vs_ma50",
+        "ma20_vs_ma50",
+        "bb_width",
+        "bb_position",
         "rsi_14",
-        "macd", "macd_signal", "macd_hist",
+        "macd",
+        "macd_signal",
+        "macd_hist",
         "atr_14",
         "volume_ratio",
-        "return_1d", "return_5d", "return_20d",
+        "return_1d",
+        "return_5d",
+        "return_20d",
         # 基本面
-        "pe_ratio", "forward_pe", "eps",
-        "price_to_book", "profit_margin",
-        "revenue_growth", "earnings_growth",
+        "pe_ratio",
+        "forward_pe",
+        "eps",
+        "price_to_book",
+        "profit_margin",
+        "revenue_growth",
+        "earnings_growth",
         # 市場脈絡
-        "spy_return_1d", "spy_return_5d",
-        "qqq_return_1d", "qqq_return_5d",
-        "vix_level", "vix_change_1d", "vix_vs_ma20",
+        "spy_return_1d",
+        "spy_return_5d",
+        "qqq_return_1d",
+        "qqq_return_5d",
+        "vix_level",
+        "vix_change_1d",
+        "vix_vs_ma20",
     ]
 
 
@@ -294,8 +333,7 @@ def validate_features(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame
 
 
 def clean_dataframe_for_training(
-    df: pd.DataFrame,
-    required_cols: Optional[list[str]] = None
+    df: pd.DataFrame, required_cols: Optional[list[str]] = None
 ) -> pd.DataFrame:
     """
     清理 DataFrame 用於訓練。

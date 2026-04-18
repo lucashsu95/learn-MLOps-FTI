@@ -94,7 +94,9 @@ TARGET_COL = get_target_col(TARGET_MODE, TARGET_HORIZON_DAYS)
 # ─────────────────────────────────────────────────────────────────
 
 
-def _get_latest_feature_group(fs, name: str, min_version: int = 1, max_version: int = FEATURE_GROUP_MAX_VERSION_SEARCH):
+def _get_latest_feature_group(
+    fs, name: str, min_version: int = 1, max_version: int = FEATURE_GROUP_MAX_VERSION_SEARCH
+):
     """取得指定名稱的最新可用 Feature Group 版本。"""
     last_error = None
     for version in range(max_version, min_version - 1, -1):
@@ -106,7 +108,9 @@ def _get_latest_feature_group(fs, name: str, min_version: int = 1, max_version: 
         except Exception as e:
             last_error = e
             continue
-    raise RuntimeError(f"找不到可用的 Feature Group: {name} v{min_version}~v{max_version}") from last_error
+    raise RuntimeError(
+        f"找不到可用的 Feature Group: {name} v{min_version}~v{max_version}"
+    ) from last_error
 
 
 def _validate_hopsworks_config() -> None:
@@ -160,10 +164,7 @@ def load_features_from_hopsworks() -> pd.DataFrame:
     except ImportError as e:
         raise ImportError("請先安裝：pip install hopsworks") from e
 
-    project = hopsworks.login(
-        project=HOPSWORKS_PROJECT,
-        api_key_value=HOPSWORKS_API_KEY
-    )
+    project = hopsworks.login(project=HOPSWORKS_PROJECT, api_key_value=HOPSWORKS_API_KEY)
     fs = project.get_feature_store()
     fg, version = _get_latest_feature_group(
         fs,
@@ -175,7 +176,7 @@ def load_features_from_hopsworks() -> pd.DataFrame:
     return df
 
 
-def load_features_from_local(csv_path: str = None) -> pd.DataFrame:
+def load_features_from_local(csv_path: Optional[str] = None) -> pd.DataFrame:
     """
     Hopsworks 還沒設定時的替代方案：
     直接執行 feature_pipeline.py 取得 df，或從 CSV 讀取。
@@ -259,7 +260,7 @@ def prepare_data(df: pd.DataFrame):
 
     print_success(f"特徵數: {len(available_features)}")
     print_success(f"Train: {len(X_train)} 筆 | Test: {len(X_test)} 筆")
-    print_success(f"訓練期間: {df['date'].iloc[0]} ~ {df['date'].iloc[split_idx-1]}")
+    print_success(f"訓練期間: {df['date'].iloc[0]} ~ {df['date'].iloc[split_idx - 1]}")
     print_success(f"測試期間: {df['date'].iloc[split_idx]} ~ {df['date'].iloc[-1]}")
     if TARGET_MODE == "excess_spy":
         print_success(f"預測目標: {TARGET_HORIZON_DAYS} 日超額報酬率（{TICKER} - SPY）")
@@ -309,7 +310,8 @@ def train_model(X_train, y_train):
 
     reg_model = XGBRegressor(**reg_params)
     reg_model.fit(
-        X_train, y_train,
+        X_train,
+        y_train,
         sample_weight=sample_weights,
         eval_set=[(X_train, y_train)],
         verbose=False,
@@ -490,8 +492,12 @@ def _plot_results(y_test, y_pred, feature_names, model, df, split_idx):
 
     # 圖一：預測 vs 實際
     ax = axes[0]
-    dates = df["date"].iloc[split_idx:split_idx + len(y_test)].values
-    y_label = f"{TARGET_HORIZON_DAYS} 日超額報酬率" if TARGET_MODE == "excess_spy" else f"{TARGET_HORIZON_DAYS} 日報酬率"
+    dates = df["date"].iloc[split_idx : split_idx + len(y_test)].values
+    y_label = (
+        f"{TARGET_HORIZON_DAYS} 日超額報酬率"
+        if TARGET_MODE == "excess_spy"
+        else f"{TARGET_HORIZON_DAYS} 日報酬率"
+    )
     ax.plot(dates, y_test.values, label=f"實際 {y_label}", color="#2196F3", linewidth=1.5)
     ax.plot(dates, y_pred, label=f"預測 {y_label}", color="#FF5722", linewidth=1.5, linestyle="--")
     ax.set_title(f"{TICKER} {y_label}：預測 vs 實際（測試集）")
@@ -506,11 +512,7 @@ def _plot_results(y_test, y_pred, feature_names, model, df, split_idx):
     ax2 = axes[1]
     importances = model.feature_importances_
     indices = np.argsort(importances)[-15:]
-    ax2.barh(
-        [feature_names[i] for i in indices],
-        importances[indices],
-        color="#4CAF50"
-    )
+    ax2.barh([feature_names[i] for i in indices], importances[indices], color="#4CAF50")
     ax2.set_title("特徵重要性 Top 15")
     ax2.set_xlabel("Importance Score")
 
@@ -567,10 +569,8 @@ def save_model_to_hopsworks(models, metrics, feature_names, tuning_info, should_
 
     try:
         import hopsworks
-        project = hopsworks.login(
-            project=HOPSWORKS_PROJECT,
-            api_key_value=HOPSWORKS_API_KEY
-        )
+
+        project = hopsworks.login(project=HOPSWORKS_PROJECT, api_key_value=HOPSWORKS_API_KEY)
         mr = project.get_model_registry()
 
         saved_version = None
@@ -629,9 +629,7 @@ def main():
     split_idx = int(len(df_sorted) * TRAIN_TEST_SPLIT_RATIO)
 
     models, tuning_info = train_model(X_train, y_train)
-    metrics, y_pred = evaluate_model(
-        models, X_test, y_test, feature_names, df_sorted, split_idx
-    )
+    metrics, y_pred = evaluate_model(models, X_test, y_test, feature_names, df_sorted, split_idx)
     wf_metrics = evaluate_walk_forward(
         df_sorted,
         feature_names,

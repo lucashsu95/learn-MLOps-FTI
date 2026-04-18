@@ -67,6 +67,8 @@ def _get_int_env(name: str, default: int) -> int:
 
 
 FEATURE_GROUP_VERSION = _get_int_env("FEATURE_GROUP_VERSION", 1)
+TARGET_HORIZON_DAYS = _get_int_env("TARGET_HORIZON_DAYS", 5)
+TARGET_MODE = os.environ.get("TARGET_MODE", "excess_spy").strip().lower()
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -102,8 +104,12 @@ def fetch_price_data(ticker: str, period: str) -> pd.DataFrame:
     df.index = pd.to_datetime(df.index).tz_localize(None)
     df.index.name = "date"
     df.columns = [c.lower() for c in df.columns]
-    print_success(f"取得 {len(df)} 筆資料，從 {df.index[0].date()} 到 {df.index[-1].date()}")
-    return df
+
+    # 這裡使用 .date() 或 .strftime() 取得日期字串，避免 LSP 報錯
+    start_date = df.index[0].strftime("%Y-%m-%d")
+    end_date = df.index[-1].strftime("%Y-%m-%d")
+    print_success(f"取得 {len(df)} 筆資料，從 {start_date} 到 {end_date}")
+    return df  # type: ignore
 
 
 def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -112,7 +118,7 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = calculate_technical_indicators(df)
 
     # 計算新增的特徵數量
-    original_cols = {'open', 'high', 'low', 'close', 'volume'}
+    original_cols = {"open", "high", "low", "close", "volume"}
     new_features = [c for c in df.columns if c not in original_cols]
     print_success(f"新增 {len(new_features)} 個特徵欄位")
     return df
@@ -133,7 +139,7 @@ def add_market_features(df: pd.DataFrame, period: str) -> pd.DataFrame:
     df = calculate_market_context(df, market_data)
 
     # 報告新增的市場特徵
-    market_cols = [c for c in df.columns if any(k in c for k in ['spy', 'qqq', 'vix'])]
+    market_cols = [c for c in df.columns if any(k in c for k in ["spy", "qqq", "vix"])]
     print_success(f"新增市場特徵: {market_cols}")
     return df
 
@@ -158,18 +164,26 @@ def fetch_fundamental_data(ticker: str) -> dict:
 
 def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """清理：移除 NaN、重設 index、型別轉換"""
+    from src.config import get_target_col
+
+    target_col = get_target_col(TARGET_MODE, TARGET_HORIZON_DAYS)
+
     # 移除因技術指標 rolling window 產生的頭部 NaN
-    required_cols = ["ma_50", "rsi_14", "macd", "target_next_return"]
+    required_cols = ["ma_50", "rsi_14", "macd", "target_next_return", target_col]
     market_required = [
-        "spy_return_1d", "spy_return_5d",
-        "qqq_return_1d", "qqq_return_5d",
-        "vix_level", "vix_change_1d", "vix_vs_ma20",
+        "spy_return_1d",
+        "spy_return_5d",
+        "qqq_return_1d",
+        "qqq_return_5d",
+        "vix_level",
+        "vix_change_1d",
+        "vix_vs_ma20",
     ]
     required_cols.extend([c for c in market_required if c in df.columns])
     df = df.dropna(subset=required_cols)
 
     # 最後一筆 target 是 NaN（沒有明日），移除
-    df = df.dropna(subset=["target_next_return"])
+    df = df.dropna(subset=["target_next_return", target_col])
 
     # 重設 index，讓 date 變成欄位
     df = df.reset_index()
@@ -193,10 +207,7 @@ def save_to_hopsworks(df: pd.DataFrame) -> None:
         print(df.head())
         return
 
-    project = hopsworks.login(
-        project=HOPSWORKS_PROJECT,
-        api_key_value=HOPSWORKS_API_KEY
-    )
+    project = hopsworks.login(project=HOPSWORKS_PROJECT, api_key_value=HOPSWORKS_API_KEY)
     fs = project.get_feature_store()
 
     used_version = None
@@ -224,15 +235,22 @@ def save_to_hopsworks(df: pd.DataFrame) -> None:
                 continue
 
             # 既有版本 schema 不相容時，升版建立新 schema。
-            if "not compatible with feature group schema" in err_msg.lower() or "does not exist in feature group" in err_msg.lower():
+            if (
+                "not compatible with feature group schema" in err_msg.lower()
+                or "does not exist in feature group" in err_msg.lower()
+            ):
                 print_warning(f"v{candidate_version} schema 不相容，嘗試下一個版本...")
                 continue
             raise
 
     if used_version is None:
-        raise RuntimeError("無法建立或取得可用的 Feature Group，請檢查 Hopsworks 專案中的既有資料表。")
+        raise RuntimeError(
+            "無法建立或取得可用的 Feature Group，請檢查 Hopsworks 專案中的既有資料表。"
+        )
 
-    print_success(f"成功寫入 {len(df)} 筆資料到 Feature Group: {FEATURE_GROUP_NAME} v{used_version}")
+    print_success(
+        f"成功寫入 {len(df)} 筆資料到 Feature Group: {FEATURE_GROUP_NAME} v{used_version}"
+    )
 
 
 def main():
@@ -244,7 +262,10 @@ def main():
 
     fundamentals = fetch_fundamental_data(TICKER)
     df = merge_fundamentals(df, fundamentals)
-    df = calculate_target(df)  # 使用共享模組計算目標
+
+    # 使用共享模組計算目標，傳入正確參數
+    df = calculate_target(df, horizon_days=TARGET_HORIZON_DAYS, target_mode=TARGET_MODE)
+
     df = clean_dataframe(df)
 
     print("\n最終 DataFrame 欄位列表：")

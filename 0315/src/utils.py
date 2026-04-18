@@ -55,6 +55,7 @@ def setup_logging(
 # 輸出輔助函數（相容現有 print 風格）
 # ─────────────────────────────────────────────────────────────────
 
+
 def log_success(message: str) -> None:
     """記錄成功訊息。"""
     logger.info(f"✓ {message}")
@@ -70,7 +71,7 @@ def log_error(message: str) -> None:
     logger.error(f"✗ {message}")
 
 
-def log_step(step: int, total: int, message: str) -> None:
+def log_step(step: float, total: int, message: str) -> None:
     """記錄步驟訊息。"""
     logger.info(f"[{step}/{total}] {message}")
 
@@ -91,6 +92,7 @@ def log_alert(message: str) -> None:
 # 向後相容的 print 替代（用於漸進遷移）
 # ─────────────────────────────────────────────────────────────────
 
+
 def print_success(message: str) -> None:
     """列印成功訊息（向後相容）。"""
     print(f" ✓ {message}")
@@ -106,7 +108,7 @@ def print_error(message: str) -> None:
     print(f" ✗ {message}")
 
 
-def print_step(step: int, total: int, message: str) -> None:
+def print_step(step: float, total: int, message: str) -> None:
     """列印步驟訊息（向後相容）。"""
     print(f"[{step}/{total}] {message}")
 
@@ -122,15 +124,18 @@ def print_section(title: str) -> None:
 # 檔案操作輔助
 # ─────────────────────────────────────────────────────────────────
 
+
 def ensure_dir(path: str) -> None:
     """確保目錄存在。"""
     import os
+
     os.makedirs(path, exist_ok=True)
 
 
 def read_json(filepath: str) -> dict:
     """讀取 JSON 檔案。"""
     import json
+
     with open(filepath, encoding="utf-8") as f:
         return json.load(f)
 
@@ -138,6 +143,7 @@ def read_json(filepath: str) -> dict:
 def write_json(filepath: str, data: dict) -> None:
     """寫入 JSON 檔案。"""
     import json
+
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
