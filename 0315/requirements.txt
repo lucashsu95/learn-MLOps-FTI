@@ -2,10 +2,11 @@
 gradio>=4.0.0
 plotly>=5.0.0
 yfinance>=0.2.0
-hopsworks>=3.0.0
+hopsworks[python]>=3.0.0
 pandas>=1.5.0
 numpy>=1.23.0
 python-dotenv>=1.0.0
+pyarrow>=10.0.0
 
 # ML dependencies
 xgboost>=1.7.0

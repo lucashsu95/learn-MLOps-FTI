@@ -138,3 +138,9 @@ model_aapl
 model_tsla
 latest_prediction.json
 AGENTS.md
+# Agentic Harness Engineering (Local AI Agent Files)
+# These files should NEVER be committed to the repository
+AGENTS.md
+docs/progress.md
+.opencode/
+scripts/harness/

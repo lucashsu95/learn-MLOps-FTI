@@ -71,6 +71,7 @@ MODAL_IMAGE_PACKAGES = [
     "pandas",
     "numpy",
     "joblib",
+    "python-dotenv",
 ]
 # ─────────────────────────────────────────────────────────────────
 
@@ -96,10 +97,22 @@ def _get_modal_app():
     _validate_hopsworks_config()
 
     image = modal.Image.debian_slim().pip_install(*MODAL_IMAGE_PACKAGES)
-    app   = modal.App("stock-inference-pipeline")
+    app = modal.App("stock-inference-pipeline")
 
-    # Hopsworks API Key 用 Modal Secret 存（安全）
-    secret = modal.Secret.from_dict({"HOPSWORKS_API_KEY": HOPSWORKS_API_KEY})
+    # 所有需要的環境變數（從 .env 讀取）
+    secret = modal.Secret.from_dict(
+        {
+            "HOPSWORKS_API_KEY": HOPSWORKS_API_KEY,
+            "HOPSWORKS_PROJECT": HOPSWORKS_PROJECT,
+            "TICKER": TICKER,
+            "FEATURE_GROUP_VERSION": os.environ.get("FEATURE_GROUP_VERSION", "1"),
+            "MODEL_VERSION": os.environ.get("MODEL_VERSION", "1"),
+            "PREDICTION_GROUP_VERSION": os.environ.get("PREDICTION_GROUP_VERSION", "1"),
+            "SIGNAL_THRESHOLD": os.environ.get("SIGNAL_THRESHOLD", "0.58"),
+            "TARGET_HORIZON_DAYS": os.environ.get("TARGET_HORIZON_DAYS", "5"),
+            "TARGET_MODE": os.environ.get("TARGET_MODE", "excess_spy"),
+        }
+    )
 
     return app, image, secret
 
@@ -173,10 +186,14 @@ def load_model_from_hopsworks():
     feature_cols = metadata["feature_cols"]
     print(f" ✓ 模型載入成功（訓練於 {metadata['trained_at'][:10]}）")
     print(f" ✓ 使用 {len(feature_cols)} 個特徵")
-    return {
-        "regressor": reg_model,
-        "classifier": cls_model,
-    }, feature_cols, metadata
+    return (
+        {
+            "regressor": reg_model,
+            "classifier": cls_model,
+        },
+        feature_cols,
+        metadata,
+    )
 
 
 def load_model_from_local(model_dir: str = None):
@@ -193,14 +210,20 @@ def load_model_from_local(model_dir: str = None):
     with open(os.path.join(model_dir, "metadata.json")) as f:
         metadata = json.load(f)
     print(f" ✓ 本地模型載入：{model_dir}/")
-    return {
-        "regressor": reg_model,
-        "classifier": cls_model,
-    }, metadata["feature_cols"], metadata
+    return (
+        {
+            "regressor": reg_model,
+            "classifier": cls_model,
+        },
+        metadata["feature_cols"],
+        metadata,
+    )
 
 
 # ── Step 3：執行預測 ──────────────────────────────────────────────
-def run_inference(models, feature_cols: list, latest_row: pd.Series, latest_date: date, metadata: dict = None) -> dict:
+def run_inference(
+    models, feature_cols: list, latest_row: pd.Series, latest_date: date, metadata: dict = None
+) -> dict:
     """用最新特徵預測目標期報酬率，並換算預測收盤價"""
     print("  [3/4] 執行推論...")
 
@@ -217,7 +240,9 @@ def run_inference(models, feature_cols: list, latest_row: pd.Series, latest_date
     reg_pred = float(reg_model.predict(X_df)[0])
     reg_pred = float(np.clip(reg_pred, -0.2, 0.2))
 
-    used_threshold = float((metadata or {}).get("tuning", {}).get("signal_threshold", SIGNAL_THRESHOLD))
+    used_threshold = float(
+        (metadata or {}).get("tuning", {}).get("signal_threshold", SIGNAL_THRESHOLD)
+    )
     if cls_model is not None:
         up_prob = float(cls_model.predict_proba(X_df)[0][1])
         if up_prob >= used_threshold:
@@ -242,26 +267,28 @@ def run_inference(models, feature_cols: list, latest_row: pd.Series, latest_date
 
     predicted_return = float(np.clip(predicted_return, -0.2, 0.2))
 
-    current_price   = float(latest_row["close"])
+    current_price = float(latest_row["close"])
     predicted_price = current_price * (1 + predicted_return)
-    change_pct      = predicted_return * 100
-    direction       = "⬆ 看漲" if change_pct > 0 else "⬇ 看跌"
+    change_pct = predicted_return * 100
+    direction = "⬆ 看漲" if change_pct > 0 else "⬇ 看跌"
     predicted_for_date = _add_trading_days(latest_date, horizon_days)
 
     result = {
-        "ticker":          TICKER,
+        "ticker": TICKER,
         "prediction_date": str(latest_date),
         "predicted_for_date": str(predicted_for_date),
         "target_horizon_days": horizon_days,
-        "current_close":   round(current_price, 4),
+        "current_close": round(current_price, 4),
         "predicted_close": round(predicted_price, 4),
-        "change_pct":      round(change_pct, 4),
-        "direction":       direction,
-        "predicted_at":    datetime.now().isoformat(),
+        "change_pct": round(change_pct, 4),
+        "direction": direction,
+        "predicted_at": datetime.now().isoformat(),
     }
 
     print(f"  ✓ 今日收盤：${current_price:.2f}")
-    print(f"  ✓ 預測 {horizon_days} 日後：${predicted_price:.2f}  ({change_pct:+.2f}%)  {direction}")
+    print(
+        f"  ✓ 預測 {horizon_days} 日後：${predicted_price:.2f}  ({change_pct:+.2f}%)  {direction}"
+    )
     if target_mode == "excess_spy":
         print(f"  ✓ 目標模式：超額報酬（加回 SPY {horizon_days}d 報酬 {benchmark_return:+.4f}）")
     if up_prob is not None:
@@ -278,7 +305,7 @@ def save_prediction_to_hopsworks(result: dict):
 
         project = hopsworks.login(
             project=HOPSWORKS_PROJECT,
-            api_key_value=os.environ.get("HOPSWORKS_API_KEY", HOPSWORKS_API_KEY)
+            api_key_value=os.environ.get("HOPSWORKS_API_KEY", HOPSWORKS_API_KEY),
         )
         fs = project.get_feature_store()
 
@@ -293,7 +320,7 @@ def save_prediction_to_hopsworks(result: dict):
                     version=candidate_version,
                     primary_key=["ticker", "prediction_date"],
                     description=f"{TICKER} daily close prediction results",
-                    online_enabled=True,   # 開啟 online store 供 UI 即時讀取
+                    online_enabled=True,  # 開啟 online store 供 UI 即時讀取
                 )
                 fg.insert(df_pred, write_options={"wait_for_job": True})
                 used_version = candidate_version
@@ -303,7 +330,10 @@ def save_prediction_to_hopsworks(result: dict):
                 if "already exists" in err_msg.lower() and "table" in err_msg.lower():
                     print(f"  ⚠ v{candidate_version} 建立失敗（table 已存在），嘗試下一個版本...")
                     continue
-                if "not compatible with feature group schema" in err_msg.lower() or "does not exist in feature group" in err_msg.lower():
+                if (
+                    "not compatible with feature group schema" in err_msg.lower()
+                    or "does not exist in feature group" in err_msg.lower()
+                ):
                     print(f"  ⚠ v{candidate_version} schema 不相容，嘗試下一個版本...")
                     continue
                 raise
@@ -346,7 +376,9 @@ def run_pipeline():
 
     print("\n✅ Inference Pipeline 執行完畢")
     horizon_days = int((metadata or {}).get("target_horizon_days", 1))
-    print(f"   {result['ticker']}  預測 {horizon_days} 日後收盤：${result['predicted_close']}  {result['direction']}")
+    print(
+        f"   {result['ticker']}  預測 {horizon_days} 日後收盤：${result['predicted_close']}  {result['direction']}"
+    )
     return result
 
 
