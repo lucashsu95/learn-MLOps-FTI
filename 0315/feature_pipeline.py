@@ -235,12 +235,20 @@ def save_to_hopsworks(df: pd.DataFrame) -> None:
                 continue
 
             # 既有版本 schema 不相容時，升版建立新 schema。
-            if (
-                "not compatible with feature group schema" in err_msg.lower()
-                or "does not exist in feature group" in err_msg.lower()
-            ):
-                print_warning(f"v{candidate_version} schema 不相容，嘗試下一個版本...")
+            schema_errors = [
+                "not compatible with feature group schema",
+                "does not exist in feature group",
+                "cannot insert data into feature group",
+                "field",
+                "schema",
+            ]
+            if any(msg in err_msg.lower() for msg in schema_errors):
+                print_warning(f"v{candidate_version} schema 不相容或寫入失敗，嘗試下一個版本...")
+                print_warning(f"錯誤細節: {err_msg[:200]}...")
                 continue
+
+            # 若不是已知可跳過的錯誤，則拋出
+            print_error(f"v{candidate_version} 發生未知錯誤：{err_msg}")
             raise
 
     if used_version is None:

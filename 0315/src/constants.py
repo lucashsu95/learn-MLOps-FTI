@@ -126,9 +126,9 @@ PREDICTION_CLIP_RANGE = (-0.2, 0.2)  # 預測值裁切範圍
 # Feature Store / Model Registry
 # ─────────────────────────────────────────────────────────────────
 
-FEATURE_GROUP_VERSION_MAX_OFFSET = 20
-MODEL_VERSION_MAX_OFFSET = 10
-FEATURE_GROUP_MAX_VERSION_SEARCH = 30
+FEATURE_GROUP_VERSION_MAX_OFFSET = 100
+MODEL_VERSION_MAX_OFFSET = 20
+FEATURE_GROUP_MAX_VERSION_SEARCH = 150
 
 
 # ─────────────────────────────────────────────────────────────────
